@@ -1,0 +1,38 @@
+const net = require("net");
+
+//const data = Buffer.from("5\r\nHello\r\n9\r\n World!ho\r\n", 'ascii')
+
+const data = Buffer.from("Hello world what are you doing");
+const chunk = Buffer.concat([
+    Buffer.from(data.length.toString(16) + "\r\n"),  // → "c\r\n"
+    Buffer.from(data),                               // → "Hello world!"
+    Buffer.from("\r\n")                              // → "\r\n"
+]);
+
+
+const socket = net.Socket({
+	writable: true,
+	readable: true,
+	allowHalfOpen: true
+})
+
+socket.connect(1234, "127.0.0.1");
+
+socket.on('data', (data)=> {
+	console.log(data.toString('ascii'))
+});
+
+/*socket.on('error', (err)=> {
+	console.log(err.message);
+}) */
+
+const header = Buffer.from("PUT /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n", 'ascii');
+socket.write(header);
+
+setInterval(()=>{
+	socket.write(chunk);
+},500)
+
+setTimeout(()=>{
+	socket.destroy();
+},5000)
