@@ -4,11 +4,11 @@ export type DynBuf  = {
 	readOffset: number;
 }
 
-export function bufSize(buf:DynBuf): number {
+export function bufSize(buf:DynBuf): number { //size fo dyn buf
 	return buf.data.length - buf.readOffset
 }
 
-function bufCapacity(buf: DynBuf):number {
+function bufCapacity(buf: DynBuf):number { //actual capacity of the underlying container
 	return buf.data.length;
 }
 
@@ -17,7 +17,7 @@ export function bufPush(data: Buffer, buf: DynBuf):void {
 	
 	if(newLen > bufSize(buf)) {
 		//grow the buffer
-		let cap = Math.max(bufSize(buf), 32);
+		let cap = Math.max(bufSize(buf), 32); //minimum size 32 bytes
 		while(cap < newLen) {
 			cap *= 2;
 		}
@@ -27,7 +27,7 @@ export function bufPush(data: Buffer, buf: DynBuf):void {
 		buf.readOffset = 0;
 	}
 	
-	data.copy(buf.data, buf.length, 0);  //src.copy(dst, dst_start, src_start, src_end)
+	data.copy(buf.data, buf.readOffset+buf.length, 0);  //src.copy(dst, dst_start, src_start, src_end)
 	buf.length=newLen;
 }
 

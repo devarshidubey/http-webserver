@@ -208,20 +208,20 @@ function encodeHTTPRes(res: HTTPRes): Buffer { //writes header
 }
 
 async function handleReq(body: BodyReader, req: HTTPReq): Promise<HTTPRes> { //async to add io read in the future
-	let res: BodyReader;
+	let resBody: BodyReader;
 	const uri: string = req.uri.toString('utf-8')
 	switch(true) {
 	case uri === '/echo':
-		res = body;
+		resBody = body;
 		break;
 	case uri === '/sheep':
-		res = readerFromGenerator(countSheep());
+		resBody = readerFromGenerator(countSheep());
 		break;
 	case uri.startsWith('/files/'):
 		validateFilePath(uri.substr('/files/'.length));
 		return await serveStaticFile(uri.substr('/files/'.length));
 	default:
-		res = readerFromMemory(Buffer.from('Hello World!\n', 'utf-8'));
+		resBody = readerFromMemory(Buffer.from('Hello World!\n', 'utf-8'));
 	}
 	
 	return {
@@ -231,7 +231,7 @@ async function handleReq(body: BodyReader, req: HTTPReq): Promise<HTTPRes> { //a
 		headers: new Map([
 			['server', [Buffer.from('my_first_http_server')]],
 		]),
-		body: res,
+		body: resBody,
 	}
 }
 
