@@ -3,6 +3,7 @@ import { DynBuf, bufPush, bufPop, bufSize } from "./bufferUtils";
 import { HTTPReq, HTTPRes, BodyReader, HTTPError } from  "./httpUtils";
 import { BufferGenerator, countSheep } from "./generatorUtils"
 import * as fs from "fs/promises"
+import * as pathLib from "path"
 
 const kMaxHeaderLen = 8*1024;
 const MAX_CHUNK_SIZE = 1024;
@@ -116,7 +117,7 @@ async function serveClient(conn: TCPConn/*socket: net.Socket*/): Promise<void>{
 		if(!msg){
 			const data:Buffer = await soRead(conn);
 			if(data.length === 0 && buf.length === 0) {
-				console.log('Connection ended\n'); //need to revamp it: proper flag for connection end
+				//console.log('Connection ended\n'); //need to revamp it: proper flag for connection end
 				return;
 			}
 			
@@ -162,8 +163,7 @@ async function writeHTTPRes(conn: TCPConn, res: HTTPRes): Promise<void> {
 	 
 	for(let last = false; !last;) {
 		let data: Buffer = await res.body.read();
-		console.log("sup");
-		console.log(data.toString());
+
 		last = (data.length === 0)
 		
 		if(res.body.length < 0 ) {
@@ -246,7 +246,8 @@ function validateFilePath(path: string): void {
 async function serveStaticFile(path: string): Promise<HTTPRes> {
 	let fp: null | fs.FileHandle = null;
 	try {
-		fp = await fs.open('public/' + path, 'r');
+		const fullPath = pathLib.join(__dirname, '..', 'public', path);
+		fp = await fs.open(fullPath, 'r');
 		
 		const stat = await fp.stat();
 		if(!stat.isFile()) {
@@ -296,7 +297,7 @@ function readerFromStaticFile(fp: fs.FileHandle, size: number): BodyReader {
 				return Buffer.from('', 'utf-8')
 			}
 			
-			const readBuffer = Buffer.alloc(16384);
+			const readBuffer = Buffer.alloc(16384); //default behavior in nodejs 20+
 			const readData = await fp.read({buffer: readBuffer});
 
 			got += readData.bytesRead;
@@ -413,7 +414,7 @@ async function*  readChunks(conn: TCPConn, buf: DynBuf): BufferGenerator {
 			bufPop(buf, consume);
 			remain-=consume;
 			
-			yield data;
+			yield Buffer.from(data); //costs 1 memcpy but it's safer for data validity
 		}
 		
 		//await bufExpectMore(conn, buf, 'chunk data');
@@ -578,8 +579,6 @@ function parseRequestLine(buf: Buffer): Buffer[] {
 		start = idx+1;
 	}
 	requestLine.push(Buffer.from(buf.subarray(start)));
-	//requestLine[0] = requestLine[0].toString('ascii');
-	//requestLine[2] = requestLine[2].toString('ascii');
 	
 	return requestLine;
 }

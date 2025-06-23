@@ -60,6 +60,7 @@ const bufferUtils_1 = require("./bufferUtils");
 const httpUtils_1 = require("./httpUtils");
 const generatorUtils_1 = require("./generatorUtils");
 const fs = __importStar(require("fs/promises"));
+const pathLib = __importStar(require("path"));
 const kMaxHeaderLen = 8 * 1024;
 const MAX_CHUNK_SIZE = 1024;
 let cachedDate = null;
@@ -144,7 +145,7 @@ function serveClient(conn /*socket: net.Socket*/) {
             if (!msg) {
                 const data = yield soRead(conn);
                 if (data.length === 0 && buf.length === 0) {
-                    console.log('Connection ended\n'); //need to revamp it: proper flag for connection end
+                    //console.log('Connection ended\n'); //need to revamp it: proper flag for connection end
                     return;
                 }
                 if (data.length === 0) {
@@ -182,8 +183,6 @@ function writeHTTPRes(conn, res) {
         const crlf = Buffer.from('\r\n');
         for (let last = false; !last;) {
             let data = yield res.body.read();
-            console.log("sup");
-            console.log(data.toString());
             last = (data.length === 0);
             if (res.body.length < 0) {
                 data = Buffer.concat([
@@ -223,20 +222,20 @@ function encodeHTTPRes(res) {
 }
 function handleReq(body, req) {
     return __awaiter(this, void 0, void 0, function* () {
-        let res;
+        let resBody;
         const uri = req.uri.toString('utf-8');
         switch (true) {
             case uri === '/echo':
-                res = body;
+                resBody = body;
                 break;
             case uri === '/sheep':
-                res = readerFromGenerator((0, generatorUtils_1.countSheep)());
+                resBody = readerFromGenerator((0, generatorUtils_1.countSheep)());
                 break;
             case uri.startsWith('/files/'):
                 validateFilePath(uri.substr('/files/'.length));
                 return yield serveStaticFile(uri.substr('/files/'.length));
             default:
-                res = readerFromMemory(Buffer.from('Hello World!\n', 'utf-8'));
+                resBody = readerFromMemory(Buffer.from('Hello World!\n', 'utf-8'));
         }
         return {
             version: 'HTTP/1.1', //env var in production or the same as req
@@ -245,7 +244,7 @@ function handleReq(body, req) {
             headers: new Map([
                 ['server', [Buffer.from('my_first_http_server')]],
             ]),
-            body: res,
+            body: resBody,
         };
     });
 }
@@ -259,7 +258,8 @@ function serveStaticFile(path) {
     return __awaiter(this, void 0, void 0, function* () {
         let fp = null;
         try {
-            fp = yield fs.open('public/' + path, 'r');
+            const fullPath = pathLib.join(__dirname, '..', 'public', path);
+            fp = yield fs.open(fullPath, 'r');
             const stat = yield fp.stat();
             if (!stat.isFile()) {
                 return resp404("Not a regular file");
@@ -305,7 +305,7 @@ function readerFromStaticFile(fp, size) {
             if (got === size) {
                 return Buffer.from('', 'utf-8');
             }
-            const readBuffer = Buffer.alloc(16384);
+            const readBuffer = Buffer.alloc(16384); //default behavior in nodejs 20+
             const readData = yield fp.read({ buffer: readBuffer });
             got += readData.bytesRead;
             if (got > size) {
@@ -407,7 +407,7 @@ function readChunks(conn, buf) {
                 const data = buf.data.subarray(buf.readOffset, buf.readOffset + consume);
                 (0, bufferUtils_1.bufPop)(buf, consume);
                 remain -= consume;
-                yield yield __await(data);
+                yield yield __await(Buffer.from(data)); //costs 1 memcpy but it's safer for data validity
             }
             //await bufExpectMore(conn, buf, 'chunk data');
             while (buf.length < 2) {
@@ -551,8 +551,6 @@ function parseRequestLine(buf) {
         start = idx + 1;
     }
     requestLine.push(Buffer.from(buf.subarray(start)));
-    //requestLine[0] = requestLine[0].toString('ascii');
-    //requestLine[2] = requestLine[2].toString('ascii');
     return requestLine;
 }
 function splitLines(buf) {
