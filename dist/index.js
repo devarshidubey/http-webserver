@@ -299,14 +299,15 @@ function resp404(msg) {
 }
 function readerFromStaticFile(fp, size) {
     let got = 0;
+    const buf = Buffer.allocUnsafe(65537); //reusable uninitialized buffer: constant time initialization
     return {
         length: -1,
         read: () => __awaiter(this, void 0, void 0, function* () {
             if (got === size) {
                 return Buffer.from('', 'utf-8');
             }
-            const readBuffer = Buffer.alloc(16384); //default behavior in nodejs 20+
-            const readData = yield fp.read({ buffer: readBuffer });
+            //const readBuffer = Buffer.alloc(16384); //default behavior in nodejs 20+
+            const readData = yield fp.read({ buffer: buf });
             got += readData.bytesRead;
             if (got > size) {
                 throw new Error("File changed while reading");
@@ -328,6 +329,9 @@ function readerFromGenerator(gen) {
             }
             console.assert(r.value.length > 0);
             return r.value;
+        }),
+        close: () => __awaiter(this, void 0, void 0, function* () {
+            yield gen.return();
         })
     };
 }
@@ -635,7 +639,7 @@ function soListen(address) {
         noDelay: true,
     });
     let listener = connInit(server);
-    server.listen(address, () => { console.log("listening"); });
+    server.listen(address, () => { console.log("Listening\n"); });
     return listener;
 }
 function soAccept(listener) {

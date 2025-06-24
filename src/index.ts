@@ -290,6 +290,7 @@ function resp404(msg: string): HTTPRes {
 
 function readerFromStaticFile(fp: fs.FileHandle, size: number): BodyReader {
 	let got = 0;
+	const buf = Buffer.allocUnsafe(65537); //reusable uninitialized buffer: constant time initialization
 	return {
 		length: -1,
 		read: async (): Promise<Buffer> => {
@@ -297,8 +298,8 @@ function readerFromStaticFile(fp: fs.FileHandle, size: number): BodyReader {
 				return Buffer.from('', 'utf-8')
 			}
 			
-			const readBuffer = Buffer.alloc(16384); //default behavior in nodejs 20+
-			const readData = await fp.read({buffer: readBuffer});
+			//const readBuffer = Buffer.alloc(16384); //default behavior in nodejs 20+
+			const readData = await fp.read({buffer: buf});
 
 			got += readData.bytesRead;
 			if(got > size) {
@@ -323,7 +324,7 @@ function readerFromGenerator(gen: BufferGenerator): BodyReader {
 			}
 			console.assert(r.value.length > 0);
 			return r.value;
-		}
+		},
 		close: async(): Promise<void> => {
 			await gen.return();
 		}
@@ -684,7 +685,7 @@ function soListen(address: {host: string; port: number}): TCPListener {
 	});
 	
 	let listener = connInit(server);
-	server.listen(address, ()=> {console.log("listening")});
+	server.listen(address, ()=> {console.log("Listening\n")});
 	
 	return listener;
 }
