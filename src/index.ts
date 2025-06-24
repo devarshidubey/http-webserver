@@ -324,6 +324,9 @@ function readerFromGenerator(gen: BufferGenerator): BodyReader {
 			console.assert(r.value.length > 0);
 			return r.value;
 		}
+		close: async(): Promise<void> => {
+			await gen.return();
+		}
 	}
 }
 
