@@ -21,10 +21,11 @@ export type BodyReader = {
 
 export class HTTPError extends Error {
     code: number;
-
-    constructor(code: number, message: string) {
+	reason: string;
+    constructor(code: number, reason: string, message: string) {
         super(message);
         this.name = "HTTPError";
         this.code = code;
+		this.reason = reason;
     }
 }

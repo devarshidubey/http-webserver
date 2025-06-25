@@ -9,6 +9,32 @@ const kMaxHeaderLen = 8*1024;
 const MAX_CHUNK_SIZE = 1024;
 let cachedDate: Buffer | null = null
 let lastDateCacheUpdateTime: number = 0;
+const singletonHeaders = new Set([
+  'authorization',
+  'content-length',
+  'content-type',
+  'expect',
+  'from',
+  'host',
+  'if-match',
+  'if-modified-since',
+  'if-none-match',
+  'if-range',
+  'if-unmodified-since',
+  'max-forwards',
+  'proxy-authorization',
+  'referer',
+  //'te',                 // special case: behaves like a list, but RFC says only one field line allowed
+  'user-agent'
+]);
+const strictListHeaders = new Set([
+  'range', //a singleton header but allows comma separated multiple values in a single line
+  'transfer-encoding',
+  'content-encoding',
+  'accept-ranges'
+]); //these list headers don't allow empty field values
+
+
 
 type TCPConn = {
 	socket: net.Socket;
@@ -122,21 +148,21 @@ async function serveClient(conn: TCPConn/*socket: net.Socket*/): Promise<void>{
 			}
 			
 			if(data.length === 0) { 
-				throw new HTTPError(400, 'Unexpected EOF');
+				throw new HTTPError(400, 'BAD REQEUST', 'Unexpected EOF');
 			}
 			
 			bufPush(data, buf);
 			continue;
 		}
 		
-		//get reqbody
-		
 		const reqBody: BodyReader = readerFromReq(conn, buf, msg);
 		
 		const res: HTTPRes = await handleReq(reqBody, msg);
 		
 		try{
-			await writeHTTPRes(conn, res);
+			await writeHTTPHeader(conn, res);
+			if(msg.method != 'HEAD')
+				await writeHTTPBody(conn, res);
 		} finally {
 			res.body.close?.();
 		}
@@ -149,7 +175,7 @@ async function serveClient(conn: TCPConn/*socket: net.Socket*/): Promise<void>{
 	}
 }
 
-async function writeHTTPRes(conn: TCPConn, res: HTTPRes): Promise<void> {
+async function writeHTTPHeader(conn: TCPConn, res: HTTPRes): Promise<void> {
 	if(res.body.length < 0 ) {
 		fieldSet(res.headers, 'Transfer-Encoding', 'chunked');
 	} 
@@ -157,8 +183,10 @@ async function writeHTTPRes(conn: TCPConn, res: HTTPRes): Promise<void> {
 		console.assert(!fieldGet(res.headers, 'Content-Length'));
 		fieldSet(res.headers, 'Content-Length', res.body.length.toString());
 	}
-	
 	await soWrite(conn, encodeHTTPRes(res)); //sends headers
+}
+
+async function writeHTTPBody(conn: TCPConn, res: HTTPRes): Promise<void> {
 	const crlf = Buffer.from('\r\n');
 	 
 	for(let last = false; !last;) {
@@ -178,8 +206,9 @@ async function writeHTTPRes(conn: TCPConn, res: HTTPRes): Promise<void> {
 	}
 }
 
+
 function encodeHTTPRes(res: HTTPRes): Buffer { //writes header
-	const statusLine = Buffer.from(res.version.toUpperCase()+" "+res.status_code+"\r\n", 'ascii');
+	const statusLine = Buffer.from(res.version.toUpperCase()+" "+res.status_code+" "+res.reason+"\r\n", 'ascii');
 
 	const date = Date.now();
 	if(!cachedDate || (date - lastDateCacheUpdateTime > 1000)) {
@@ -208,43 +237,61 @@ function encodeHTTPRes(res: HTTPRes): Buffer { //writes header
 }
 
 async function handleReq(body: BodyReader, req: HTTPReq): Promise<HTTPRes> { //async to add io read in the future
-	let resBody: BodyReader;
-	const uri: string = req.uri.toString('utf-8')
-	switch(true) {
-	case uri === '/echo':
-		resBody = body;
-		break;
-	case uri === '/sheep':
-		resBody = readerFromGenerator(countSheep());
-		break;
-	case uri.startsWith('/files/'):
-		validateFilePath(uri.substr('/files/'.length));
-		return await serveStaticFile(uri.substr('/files/'.length));
-	default:
-		resBody = readerFromMemory(Buffer.from('Hello World!\n', 'utf-8'));
-	}
+	const uri: string = req.uri.toString('utf-8');
 	
-	return {
+	const res = {
 		version: 'HTTP/1.1',//env var in production or the same as req
 		status_code: 200,
 		reason: "OK",
 		headers: new Map([
-			['server', [Buffer.from('my_first_http_server')]],
+			['server', [Buffer.from('devarshi-server')]],
 		]),
-		body: resBody,
+		body: body,
+	};
+	
+	switch(true) {
+	case uri === '/echo':
+		fieldSet(res.headers, 'content-type', 'text/plain');
+		break;
+	case uri === '/sheep':
+		res.body = readerFromGenerator(countSheep());
+		fieldSet(res.headers, 'content-type', 'text/plain');
+		break;
+	case uri.startsWith('/files/'):
+		validateFilePath(uri.substring('/files/'.length));
+		return await serveStaticFile(uri.substring('/files/'.length), req);
+	default:
+		fieldSet(res.headers, 'content-type', 'text/plain');
+		res.body = readerFromMemory(Buffer.from('Hello World!\n', 'utf-8'));
 	}
+	
+	return res;
 }
 
 function validateFilePath(path: string): void {
-	const pathRegex =/^(?!.*(?:\.\.))(?:[a-zA-Z0-9_\-\.]+\/)*[a-zA-Z0-9_\-\.]*$/
+	const pathRegex = /^(?!.*(?:\.\.))(?:[a-zA-Z0-9_.-]+\/)*[a-zA-Z0-9_.-]+(?:\/+)?$/;
 	if(!pathRegex.test(path)) {
-		throw new HTTPError(400, 'Bad uri');
+		throw new HTTPError(400, 'BAD REQEUST', 'Invalid uri');
 	}
 }
 
+async function staticFileHandler(path: string, req: HTTPReq) {
+	const bodyAllowed = !(req.method === 'GET' || req.method === 'HEAD' || req.method === 'TRACE');
+	
+	//const range: null | Buffer[] = fieldGet(req.headers, "Range");
+	//const rangeExists: boolean = (range !== null);
 
-async function serveStaticFile(path: string): Promise<HTTPRes> {
+	if(!bodyAllowed) {
+		return await serveStaticFile(path, req);
+	}
+	else {
+		throw new HTTPError(501, "NOT IMPLEMENTED", 'Cannot POST to the server'); //store a file
+	}
+}
+
+async function serveStaticFile(path: string, req: HTTPReq): Promise<HTTPRes> {
 	let fp: null | fs.FileHandle = null;
+	
 	try {
 		const fullPath = pathLib.join(__dirname, '..', 'public', path);
 		fp = await fs.open(fullPath, 'r');
@@ -255,32 +302,39 @@ async function serveStaticFile(path: string): Promise<HTTPRes> {
 		}
 		
 		const size = stat.size;
-		
+		/*if(!rangeExists || !validateRangeHeader(range)) {
+			range = Buffer.from(`bytes=0-${size-1}`);
+		} */
 		const reader = readerFromStaticFile(fp, size);
 		fp =null;
 		return {
 			version: 'HTTP/1.1',
 			status_code: 200,
-			reason: null,
+			reason: "OK",
 			headers: new Map([
-				['content-type', [Buffer.from('text/plain','ascii')]],
+				['content-type', [Buffer.from('text/plain','ascii')]], //TODO: extract from file type
 			]),
 			body: reader
 		}
 		
 	} catch(exc) {
 		console.info("Error serving file: ", exc);
-		return resp404("File not found");
+		
+		if(path.endsWith('/') || path.endsWith('\\'))
+			return resp404("Directory not found");
+		else return resp404("File not found");
 	} finally {
 		await fp?.close();
 	}
 }
 
+//function validateRangeHeader()
+
 function resp404(msg: string): HTTPRes {
 	 return {
 		version: 'HTTP/1.1',
 		status_code: 404,
-		reason: null,
+		reason: "NOT FOUND",
 		headers : new Map<string, Buffer[]>([
 			["content-type", [Buffer.from("text/plain", 'ascii')]],
 		]),
@@ -355,17 +409,17 @@ function readerFromReq(conn: TCPConn, buf: DynBuf,  req: HTTPReq): BodyReader {
 	if(contentLen && contentLen!.length === 1) {
 		bodyLen = parseDec(contentLen![0]);
 		if(isNaN(bodyLen)) {
-			throw new HTTPError(400, 'Bad Content-Length');
+			throw new HTTPError(400, 'BAD REQUEST', 'Invalid Content-Length');
 		}
 	}
 	else if(contentLen && contentLen!.length > 1) {
-		throw new HTTPError(400, 'Duplicate Content-Length');
+		throw new HTTPError(400, 'BAD REQUEST', 'Duplicate Content-Length');
 	}
 	
 	const bodyAllowed = !(req.method === 'GET' || req.method === 'HEAD' || req.method === 'TRACE');
 	const transferEncoding: null | Buffer[] = fieldGet(req.headers, 'Transfer-Encoding'); //TODO: rfc 9110 6.1: if both transfer-encoding: chunked and contentLen: reject or consider T-E and immediately close connection for security
 	if(!bodyAllowed && (bodyLen > 0 || transferEncoding)) {
-		throw new HTTPError(400, 'Body not allowed');
+		throw new HTTPError(400, 'BAD REQUEST', 'Body not allowed');
 	}
 	if(!bodyAllowed) {
 		bodyLen = 0;
@@ -380,7 +434,7 @@ function readerFromReq(conn: TCPConn, buf: DynBuf,  req: HTTPReq): BodyReader {
 		//TODO: implement chunked response
 	}
 	else {
-		throw new HTTPError(501, 'Not implemented');
+		throw new HTTPError(501, 'Not implemented', 'Content-Length/Transfer-Encoding required');
 		//TODO: read the remaining bytes
 	}
 }
@@ -391,20 +445,20 @@ async function*  readChunks(conn: TCPConn, buf: DynBuf): BufferGenerator {
 		const idx = buf.data.subarray(buf.readOffset, buf.readOffset+ buf.length).indexOf(Buffer.from('\r\n'));
 		if(idx < 0) {// need more data
 			if (buf.length > MAX_CHUNK_SIZE) {
-				throw new HTTPError(413, 'Chunk size too large');
+				throw new HTTPError(413, 'Payload Too Large', 'Chunk size too large');
 			}
 			const data = await bufExpectMore(conn, buf, 'chunk-data');
 			continue;
 		}
 		
 		if (idx+1 > MAX_CHUNK_SIZE) {
-				throw new HTTPError(413, 'Chunk size too large');
+				throw new HTTPError(413, 'Payload Too Large', 'Chunk size too large');
 		}
 		let remain = parseChunkHeader(buf.data.subarray(buf.readOffset, buf.readOffset+idx)); //parse chunk size
 		bufPop(buf, idx+2); //remove line
 				
 		if(Number.isNaN(remain)) {
-			throw new HTTPError(400, "Bad chunk");
+			throw new HTTPError(400, 'BAD REQUEST', "Bad chunk");
 		}
 		last = (remain === 0);
 		
@@ -427,7 +481,7 @@ async function*  readChunks(conn: TCPConn, buf: DynBuf): BufferGenerator {
 		}
 		
 		if(buf.data[buf.readOffset] !== 0x0D || buf.data[buf.readOffset + 1] !== 0x0A) {
-			throw new HTTPError(400, 'Missing CRLF after chunk data');
+			throw new HTTPError(400, 'BAD REQUEST', 'Missing CRLF after chunk data');
 		}
 		
 		bufPop(buf, 2);
@@ -438,7 +492,7 @@ async function bufExpectMore(conn: TCPConn, buf: DynBuf, debugLabel: string): Pr
 	const data = await soRead(conn);   // read from socket
 	
 	if (data.length === 0) {
-		throw new HTTPError(400, `Unexpected EOF while reading ${debugLabel}`);
+		throw new HTTPError(400, 'BAD REQUEST', `Unexpected EOF while reading ${debugLabel}`);
 	}
 	bufPush(data, buf);  // append to your dynamic buffer
 }
@@ -460,7 +514,7 @@ function readerFromConLen(conn: TCPConn, buf: DynBuf, remain: number): BodyReade
 			if(buf.length === 0) {
 				const data = await soRead(conn);
 				if(data.length === 0) { //EOF before full content
-					throw new HTTPError(400, 'Unexpected EOF from HTTP Body');
+					throw new HTTPError(400, 'BAD REQUEST', 'Unexpected EOF from HTTP Body');
 				}
 				bufPush(data, buf);
 			}
@@ -501,12 +555,12 @@ function cutMessage(buf: DynBuf): null | HTTPReq{
 	
 	if(idx < 0) {
 		if(buf.length >= kMaxHeaderLen) {
-			throw new HTTPError(431, "Header too long");
+			throw new HTTPError(431, "Header too long", 'Request Header Fields Too Large');
 		}
 		return null;
 	}
 	if(idx+1 >= kMaxHeaderLen) {
-		throw new HTTPError(431, "Header too long");
+		throw new HTTPError(431, "Header too long", 'Request Header Fields Too Large');
 	}
 	const msg: HTTPReq = parseHTTPReq(buf.data.subarray(buf.readOffset, buf.readOffset+idx+4));//Buffer.from(buf.data.subarray(buf.readOffset, buf.readOffset+idx+1));
 	
@@ -524,16 +578,16 @@ function parseHTTPReq(buf: Buffer): HTTPReq {
 	for(let i = 1; i < lines.length - 1; i++) {
 		const header = lines[i]; //Buffer.from(lines[i]);
 		if(!validateHeader(header)) {
-			throw new HTTPError(400, "Bad field");
+			throw new HTTPError(400, 'BAD REQUEST', "Bad field");
 		}
-		const [fieldName, fieldValue] = parseHeader(header);
-		const key = fieldName.toString('ascii').toLowerCase();
+		parseHeader(header, headers);
+
 		
-		if(headers.has(key)) {
+		/*if(headers.has(key)) {
 			headers.get(key)!.push(fieldValue); //may contain ows, field get fucntion trims these
 		} else {
 			headers.set(key, [fieldValue])
-		}
+		} */
 	}
 	
 	console.assert(lines[lines.length - 1].length === 0);
@@ -544,12 +598,59 @@ function parseHTTPReq(buf: Buffer): HTTPReq {
 		headers: headers,
 	}
 }
-function parseHeader(header: Buffer): Buffer[] { //TODO: check for comma spearators first, also check for "" escape to ignore comma inside field value
+function parseHeader(header: Buffer, headers: Map<string, Buffer[]>): void { //TODO: check for comma spearators first, also check for "" escape to ignore comma inside field value
 	const idx = header.indexOf(":");
 	const fieldName = Buffer.from(header.subarray(0, idx));
 	const fieldValue = trimBuffer(Buffer.from(header.subarray(idx+1)));
+	const key = fieldName.toString('ascii').toLowerCase();
 	
-	return [fieldName, fieldValue]; //send fieldValues if there are multiple fieldvalues in the same headerline
+	if(key === 'range') {
+		validateRangeHeader(fieldValue);
+		
+	}
+	
+	let openQuote = false;
+	let start = 0;
+	let parts: Buffer[] = [];
+
+	for(let i = 0; i < fieldValue.length; ++i) {
+		const byte = fieldValue[i];
+		if(byte === 0x22) openQuote = !openQuote; //"
+		else if(!openQuote && byte === 0x2C && singletonHeaders.has(key)) {
+			throw new HTTPError(400, 'BAD REQUEST', `Multiple field values for singleton header ${key}`);
+		}
+		else if(!openQuote && byte === 0x2C) { //,
+			let part = trimBuffer(fieldValue.subarray(start, i));
+			if(part.length > 0)
+				parts.push(part);
+			else if(strictListHeaders.has(key))
+				throw new HTTPError(400, 'BAD REQUEST', `Empty field values not allowed for comma separated ${key} header`);
+			start = i+1;
+		}
+	}
+
+	const lastPart = trimBuffer(fieldValue.subarray(start));
+	if (lastPart.length > 0) {
+		parts.push(lastPart);
+	} else if (strictListHeaders.has(key)) {
+		throw new HTTPError(400, 'BAD REQUEST', `Empty field values not allowed for comma-separated '${key}' header`);
+	}
+
+	if(!headers.has(key)) {
+		headers.set(key, parts);
+	} else {
+		if(key === 'range') throw new HTTPError(400, 'BAD REQUEST', "Multiple Range headers are not allowed");
+		headers.get(key)!.push(...parts);
+	}
+	
+}
+
+function validateRangeHeader(fieldValue: Buffer): void {
+	let val = fieldValue.toString('ascii').toLowerCase();
+	if(!val.startsWith('bytes=')) throw new HTTPError(400, 'BAD REQUEST', "Wrong Range header field ");
+	val = val.substring(6);
+	const pattern = /^(?:\d+-\d*|-\d+)(?:,(?:\d+-\d*|-\d+))*$/;
+	if(!pattern.test(val)) throw new HTTPError(400, 'BAD REQUEST', "Wrong Range header field ");
 }
 
 function trimBuffer(buf: Buffer): Buffer {
@@ -558,7 +659,7 @@ function trimBuffer(buf: Buffer): Buffer {
 	while(start <= end && (buf[start] === 0x20 || buf[start] === 0x09)) start++;
 	while(start <= end && (buf[end] === 0x20 || buf[end] === 0x09)) end--;
 	
-	return buf.slice(start, end+1);
+	return buf.subarray(start, end+1);
 }
 
 function validateHeader(header: Buffer): boolean {
@@ -577,7 +678,7 @@ function parseRequestLine(buf: Buffer): Buffer[] {
 	for(let i = 0; i < 2; i++) {
 		let idx = buf.indexOf(" ", start);
 		if(idx === -1 || idx+1 > buf.length) {
-			throw new HTTPError(400, "Invalid request line syntax");
+			throw new HTTPError(400, 'BAD REQUEST', "Invalid request line syntax");
 		}
 		requestLine.push(Buffer.from(buf.subarray(start, idx)));
 		start = idx+1;
@@ -608,14 +709,15 @@ async function newConn(conn: TCPConn/*socket: net.Socket*/): Promise<void> {
 			const res: HTTPRes = {
 				version: 'HTTP/1.1',
 				status_code: exc.code,
-				reason: null,
+				reason: exc.reason,
 				headers : new Map<string, Buffer[]>([
 					["content-type:", [Buffer.from("text/plain", 'ascii')]],
 				]),
 				body: readerFromMemory(Buffer.from(message, 'utf-8')),
 			}
 			try {
-				await writeHTTPRes(conn, res);
+				await writeHTTPHeader(conn, res);
+				await writeHTTPBody(conn, res);
 			} catch(exc) {console.error('exception', exc)}
 		}
 	} finally {
