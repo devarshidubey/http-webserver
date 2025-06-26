@@ -169,7 +169,6 @@ function serveClient(conn /*socket: net.Socket*/) {
             if (!msg) {
                 const data = yield soRead(conn);
                 if (data.length === 0 && buf.length === 0) {
-                    //console.log('Connection ended\n'); //need to revamp it: proper flag for connection end
                     return;
                 }
                 if (data.length === 0) {
@@ -178,7 +177,7 @@ function serveClient(conn /*socket: net.Socket*/) {
                 (0, bufferUtils_1.bufPush)(data, buf);
                 continue;
             }
-            const reqBody = readerFromReq(conn, buf, msg);
+            const reqBody = yield readerFromReq(conn, buf, msg);
             const res = yield handleReq(reqBody, msg);
             try {
                 yield writeHTTPHeader(conn, res);
@@ -266,15 +265,15 @@ function handleReq(body, req) {
                 fieldSet(res.headers, 'content-type', 'text/plain');
                 break;
             case uri === '/sheep':
-                res.body = readerFromGenerator((0, generatorUtils_1.countSheep)());
+                res.body = yield readerFromGenerator((0, generatorUtils_1.countSheep)());
                 fieldSet(res.headers, 'content-type', 'text/plain');
                 break;
             case uri.startsWith('/files/'):
                 validateFilePath(uri.substring('/files/'.length));
-                return yield serveStaticFile(uri.substring('/files/'.length), req);
+                return yield staticFileHandler(uri.substring('/files/'.length), req);
             default:
                 fieldSet(res.headers, 'content-type', 'text/plain');
-                res.body = readerFromMemory(Buffer.from('Hello World!\n', 'utf-8'));
+                res.body = readerFromMemory(Buffer.from('Hello World!', 'utf-8'));
         }
         return res;
     });
@@ -288,8 +287,6 @@ function validateFilePath(path) {
 function staticFileHandler(path, req) {
     return __awaiter(this, void 0, void 0, function* () {
         const bodyAllowed = !(req.method === 'GET' || req.method === 'HEAD' || req.method === 'TRACE');
-        //const range: null | Buffer[] = fieldGet(req.headers, "Range");
-        //const rangeExists: boolean = (range !== null);
         if (!bodyAllowed) {
             return yield serveStaticFile(path, req);
         }
@@ -298,6 +295,7 @@ function staticFileHandler(path, req) {
         }
     });
 }
+//all these nested try-catch-finally blocks due to resource ownership management
 function serveStaticFile(path, req) {
     return __awaiter(this, void 0, void 0, function* () {
         let fp = null;
@@ -306,85 +304,176 @@ function serveStaticFile(path, req) {
             fp = yield fs.open(fullPath, 'r');
             const stat = yield fp.stat();
             if (!stat.isFile()) {
-                return resp404("Not a regular file");
+                return respError(404, "NOT FOUND", "Not a regular file");
             }
             const size = stat.size;
-            /*if(!rangeExists || !validateRangeHeader(range)) {
-                range = Buffer.from(`bytes=0-${size-1}`);
-            } */
-            const reader = readerFromStaticFile(fp, size);
-            fp = null;
-            return {
-                version: 'HTTP/1.1',
-                status_code: 200,
-                reason: "OK",
-                headers: new Map([
-                    ['content-type', [Buffer.from('text/plain', 'ascii')]], //TODO: extract from file type
-                ]),
-                body: reader
-            };
+            try {
+                return yield staticFileResp(fp, req, size);
+            }
+            catch (exc) {
+                if (exc instanceof httpUtils_1.HTTPError) {
+                    console.info("Error serving file: ", exc);
+                    return respError(exc.code, exc.reason, exc.message);
+                }
+                console.info("Unknown error serving file:", exc);
+                return respError(500, "Internal Server Error", "Unknown error");
+            }
+            finally {
+                fp = null; // Ownership transferred to reader; don't close here: reader is now responsible for the file, this function's job is done;
+            }
         }
         catch (exc) {
             console.info("Error serving file: ", exc);
             if (path.endsWith('/') || path.endsWith('\\'))
-                return resp404("Directory not found");
+                return respError(404, "NOT FOUND", "Directory not found");
             else
-                return resp404("File not found");
+                return respError(404, "NOT FOUND", "File not found");
+        }
+        finally {
+            yield (fp === null || fp === void 0 ? void 0 : fp.close()); //close only when ownership is with it: until reader is called.
+        }
+    });
+}
+function parseBytesRanges(ranges) {
+    return ranges.map((range) => {
+        const idx = range.indexOf(Buffer.from('-'));
+        if (idx == 0) {
+            return parseDec(range.subarray(idx + 1));
+        }
+        else if (idx == range.length - 1) {
+            return [parseDec(range.subarray(0, idx)), null];
+        }
+        else {
+            return [parseDec(range.subarray(0, idx)), parseDec(range.subarray(idx + 1))];
+        }
+    });
+}
+function staticFileResp(fp, req, size) {
+    return __awaiter(this, void 0, void 0, function* () {
+        try {
+            let ranges = [];
+            const rangeField = fieldGet(req.headers, 'Range');
+            if (!rangeField) {
+                ranges.push([0, null]);
+            }
+            else {
+                ranges = parseBytesRanges(rangeField);
+            }
+            const multipart = (ranges.length > 1);
+            try {
+                const boundary = 'boundary-' + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString();
+                const gen = yield staticFileGenerator(fp, ranges, size, boundary); //Once this generator function calls: “The generator is now responsible for closing the file.” ownership transfered
+                const reader = yield readerFromGenerator(gen); //no ownership transfer of file, but ownership transfer of generator
+                return {
+                    version: 'HTTP/1.1',
+                    status_code: multipart ? 206 : 200,
+                    reason: "OK",
+                    headers: new Map([
+                        ['content-type', multipart ? [Buffer.from(`multipart/byteranges; boundary=${boundary}`)] : [Buffer.from('text/plain', 'ascii')]], //TODO: extract from file type
+                    ]),
+                    body: reader
+                };
+            }
+            finally {
+                fp = null;
+            }
+        }
+        catch (err) {
+            yield (fp === null || fp === void 0 ? void 0 : fp.close()); //if this function throws, it is its own responsibility to close the file before ownership is transfered
+            if (err instanceof httpUtils_1.HTTPError) {
+                return respError(err.code, err.reason, err.message);
+            }
+            throw new httpUtils_1.HTTPError(500, "Internal server error", "Unknown server error");
         }
         finally {
             yield (fp === null || fp === void 0 ? void 0 : fp.close());
         }
     });
 }
-//function validateRangeHeader()
-function resp404(msg) {
+function processRange(range, fileSize) {
+    if (typeof (range) === "number") {
+        return [Math.max(0, fileSize - range), fileSize - 1];
+    }
+    else {
+        if (range[0] >= fileSize)
+            throw new httpUtils_1.HTTPError(416, "Range Not Satisfiable", "Range field is out of bounds");
+        if (range[1] === null) {
+            return [range[0], fileSize - 1];
+        }
+        else {
+            return [range[0], Math.min(fileSize - 1, range[1])];
+        }
+    }
+}
+function respError(code, reason, msg) {
     return {
         version: 'HTTP/1.1',
-        status_code: 404,
-        reason: "NOT FOUND",
+        status_code: code,
+        reason: reason,
         headers: new Map([
             ["content-type", [Buffer.from("text/plain", 'ascii')]],
         ]),
         body: readerFromMemory(Buffer.from(msg, 'ascii')),
     };
 }
-function readerFromStaticFile(fp, size) {
-    let got = 0;
-    const buf = Buffer.allocUnsafe(65537); //reusable uninitialized buffer: constant time initialization
-    return {
-        length: -1,
-        read: () => __awaiter(this, void 0, void 0, function* () {
-            if (got === size) {
-                return Buffer.from('', 'utf-8');
+function staticFileGenerator(fp, ranges, fileSize, boundary) {
+    return __asyncGenerator(this, arguments, function* staticFileGenerator_1() {
+        try {
+            const multipart = (ranges.length > 1);
+            for (let i = 0; i < ranges.length; i++) {
+                let [start, end] = processRange(ranges[i], fileSize);
+                let size = end - start + 1;
+                //yield the header for byte range
+                if (multipart) {
+                    yield yield __await(Buffer.from(`--${boundary}\r\nContent-Type: text/plain\r\nContent-Range: bytes ${start}-${end}/${fileSize}\r\n\r\n`));
+                }
+                let got = 0;
+                const buf = Buffer.allocUnsafe(64 * 1024);
+                //yield the byte range
+                while (got < size) {
+                    const data = yield __await(fp.read(buf, 0, size - got, start));
+                    got += data.bytesRead;
+                    start += data.bytesRead;
+                    yield yield __await(data.buffer.subarray(0, data.bytesRead));
+                }
+                if (multipart)
+                    yield yield __await(Buffer.from("\r\n"));
             }
-            //const readBuffer = Buffer.alloc(16384); //default behavior in nodejs 20+
-            const readData = yield fp.read({ buffer: buf });
-            got += readData.bytesRead;
-            if (got > size) {
-                throw new Error("File changed while reading");
+            if (multipart) {
+                yield yield __await(Buffer.from(`--${boundary}--\r\n`));
             }
-            return readData.buffer.subarray(0, readData.bytesRead);
-        }),
-        close: () => __awaiter(this, void 0, void 0, function* () {
-            yield fp.close();
-        })
-    };
+        }
+        catch (err) {
+            throw err;
+        }
+        finally {
+            yield __await((fp === null || fp === void 0 ? void 0 : fp.close())); //if this function throws, it is its own responsibility to close the file before ownership is transfered
+        }
+    });
 }
 function readerFromGenerator(gen) {
-    return {
-        length: -1,
-        read: () => __awaiter(this, void 0, void 0, function* () {
-            const r = yield gen.next();
-            if (r.done) {
-                return Buffer.from(''); //EOF
-            }
-            console.assert(r.value.length > 0);
-            return r.value;
-        }),
-        close: () => __awaiter(this, void 0, void 0, function* () {
-            yield gen.return();
-        })
-    };
+    return __awaiter(this, void 0, void 0, function* () {
+        try {
+            return {
+                length: -1,
+                read: () => __awaiter(this, void 0, void 0, function* () {
+                    const r = yield gen.next();
+                    if (r.done) {
+                        return Buffer.from(''); //EOF
+                    }
+                    console.assert(r.value.length > 0);
+                    return r.value;
+                }),
+                close: () => __awaiter(this, void 0, void 0, function* () {
+                    yield gen.return();
+                })
+            };
+        }
+        catch (err) {
+            yield gen.return(); //since this fucntion owns the generator in case of error(bodyreader not formed)
+            throw err;
+        }
+    });
 }
 function readerFromMemory(data) {
     let done = false;
@@ -402,37 +491,39 @@ function readerFromMemory(data) {
     };
 }
 function readerFromReq(conn, buf, req) {
-    let bodyLen = -1;
-    const contentLen = fieldGet(req.headers, 'Content-Length');
-    if (contentLen && contentLen.length === 1) {
-        bodyLen = parseDec(contentLen[0]);
-        if (isNaN(bodyLen)) {
-            throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', 'Invalid Content-Length');
+    return __awaiter(this, void 0, void 0, function* () {
+        let bodyLen = -1;
+        const contentLen = fieldGet(req.headers, 'Content-Length');
+        if (contentLen && contentLen.length === 1) {
+            bodyLen = parseDec(contentLen[0]);
+            if (isNaN(bodyLen)) {
+                throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', 'Invalid Content-Length');
+            }
         }
-    }
-    else if (contentLen && contentLen.length > 1) {
-        throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', 'Duplicate Content-Length');
-    }
-    const bodyAllowed = !(req.method === 'GET' || req.method === 'HEAD' || req.method === 'TRACE');
-    const transferEncoding = fieldGet(req.headers, 'Transfer-Encoding'); //TODO: rfc 9110 6.1: if both transfer-encoding: chunked and contentLen: reject or consider T-E and immediately close connection for security
-    if (!bodyAllowed && (bodyLen > 0 || transferEncoding)) {
-        throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', 'Body not allowed');
-    }
-    if (!bodyAllowed) {
-        bodyLen = 0;
-    }
-    if (bodyLen >= 0) {
-        //handle
-        return readerFromConLen(conn, buf, bodyLen);
-    }
-    else if (transferEncoding && transferEncoding.some((buf) => { return buf.toString('ascii') === 'chunked'; })) {
-        return readerFromGenerator(readChunks(conn, buf));
-        //TODO: implement chunked response
-    }
-    else {
-        throw new httpUtils_1.HTTPError(501, 'Not implemented', 'Content-Length/Transfer-Encoding required');
-        //TODO: read the remaining bytes
-    }
+        else if (contentLen && contentLen.length > 1) {
+            throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', 'Duplicate Content-Length');
+        }
+        const bodyAllowed = !(req.method === 'GET' || req.method === 'HEAD' || req.method === 'TRACE');
+        const transferEncoding = fieldGet(req.headers, 'Transfer-Encoding'); //TODO: rfc 9110 6.1: if both transfer-encoding: chunked and contentLen: reject or consider T-E and immediately close connection for security
+        if (!bodyAllowed && (bodyLen > 0 || transferEncoding)) {
+            throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', 'Body not allowed');
+        }
+        if (!bodyAllowed) {
+            bodyLen = 0;
+        }
+        if (bodyLen >= 0) {
+            //handle
+            return readerFromConLen(conn, buf, bodyLen);
+        }
+        else if (transferEncoding && transferEncoding.some((buf) => { return buf.toString('ascii') === 'chunked'; })) {
+            return yield readerFromGenerator(readChunks(conn, buf));
+            //TODO: implement chunked response
+        }
+        else {
+            throw new httpUtils_1.HTTPError(501, 'Not implemented', 'Content-Length/Transfer-Encoding required');
+            //TODO: read the remaining bytes
+        }
+    });
 }
 function readChunks(conn, buf) {
     return __asyncGenerator(this, arguments, function* readChunks_1() {
@@ -556,11 +647,6 @@ function parseHTTPReq(buf) {
             throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', "Bad field");
         }
         parseHeader(header, headers);
-        /*if(headers.has(key)) {
-            headers.get(key)!.push(fieldValue); //may contain ows, field get fucntion trims these
-        } else {
-            headers.set(key, [fieldValue])
-        } */
     }
     console.assert(lines[lines.length - 1].length === 0);
     return {
@@ -573,31 +659,53 @@ function parseHTTPReq(buf) {
 function parseHeader(header, headers) {
     const idx = header.indexOf(":");
     const fieldName = Buffer.from(header.subarray(0, idx));
-    const fieldValue = trimBuffer(Buffer.from(header.subarray(idx + 1)));
+    let fieldValue = trimBuffer(Buffer.from(header.subarray(idx + 1)));
     const key = fieldName.toString('ascii').toLowerCase();
     if (key === 'range') {
-        validateRangeHeader(fieldValue);
+        if (headers.has(key))
+            throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', "Multiple Range headers are not allowed");
+        if (!validateRangeHeader(fieldValue)) {
+            console.log("invalid range header");
+            headers.set(key, [Buffer.from("0-")]);
+            return;
+        }
+        fieldValue = fieldValue.subarray(6);
     }
     let openQuote = false;
     let start = 0;
     let parts = [];
+    let subParts = [];
     for (let i = 0; i < fieldValue.length; ++i) {
         const byte = fieldValue[i];
-        if (byte === 0x22)
-            openQuote = !openQuote; //"
-        else if (!openQuote && byte === 0x2C && singletonHeaders.has(key)) {
-            throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', `Multiple field values for singleton header ${key}`);
+        if (openQuote && byte === 0x5C) { //0x5C === \  escape has syntactical meaning only inside a quoted string
+            subParts.push(fieldValue.subarray(start, i));
+            start = ++i; //escape the next character
+            continue;
         }
-        else if (!openQuote && byte === 0x2C) { //,
-            let part = trimBuffer(fieldValue.subarray(start, i));
+        if (byte === 0x22) { //quote 
+            subParts.push(fieldValue.subarray(start, i));
+            start = i + 1;
+            openQuote = !openQuote;
+        }
+        else if (!openQuote && byte === 0x2C && singletonHeaders.has(key)) { // comma
+            throw new httpUtils_1.HTTPError(400, 'Bad request', `Multiple field values for singleton header ${key}`);
+        }
+        else if (!openQuote && byte === 0x2C) { //comma separater outside of quoted string
+            subParts.push(fieldValue.subarray(start, i));
+            let part = trimBuffer(Buffer.concat(subParts));
+            subParts = [];
             if (part.length > 0)
                 parts.push(part);
             else if (strictListHeaders.has(key))
-                throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', `Empty field values not allowed for comma separated ${key} header`);
+                throw new httpUtils_1.HTTPError(400, 'Bad request', `Empty field values not allowed for comma separated ${key} header`);
             start = i + 1;
         }
     }
-    const lastPart = trimBuffer(fieldValue.subarray(start));
+    if (openQuote)
+        throw new httpUtils_1.HTTPError(400, "Bad request", `Unterminated string`);
+    subParts.push(fieldValue.subarray(start));
+    const lastPart = trimBuffer(Buffer.concat(subParts));
+    subParts = [];
     if (lastPart.length > 0) {
         parts.push(lastPart);
     }
@@ -608,8 +716,6 @@ function parseHeader(header, headers) {
         headers.set(key, parts);
     }
     else {
-        if (key === 'range')
-            throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', "Multiple Range headers are not allowed");
         headers.get(key).push(...parts);
     }
 }
@@ -619,8 +725,7 @@ function validateRangeHeader(fieldValue) {
         throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', "Wrong Range header field ");
     val = val.substring(6);
     const pattern = /^(?:\d+-\d*|-\d+)(?:,(?:\d+-\d*|-\d+))*$/;
-    if (!pattern.test(val))
-        throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', "Wrong Range header field ");
+    return pattern.test(val);
 }
 function trimBuffer(buf) {
     let start = 0;

@@ -19,6 +19,8 @@ export type BodyReader = {
 	close?: () => Promise<void>;
 }
 
+export type HTTPRange = [number, number|null] | number;
+
 export class HTTPError extends Error {
     code: number;
 	reason: string;
