@@ -97,6 +97,7 @@ function soInit(socket) {
         reader: null
     };
     socket.on('end', () => {
+        console.log("poipoi");
         conn.ended = true;
         if (conn.reader) {
             conn.reader.resolve(Buffer.from(''));
@@ -116,6 +117,7 @@ function soInit(socket) {
     socket.on('data', (data) => {
         console.assert(conn.reader);
         socket.pause();
+        console.log(data.subarray(data.length - 1));
         conn.reader.resolve(data); //! to avoid typescript throwing error: operation on a possible null value, but we assure TS that it will never be null by using !
         conn.reader = null;
     });
@@ -181,16 +183,24 @@ function serveClient(conn /*socket: net.Socket*/) {
             const res = yield handleReq(reqBody, msg);
             try {
                 yield writeHTTPHeader(conn, res);
-                if (msg.method != 'HEAD')
+                if (msg.method !== 'HEAD')
                     yield writeHTTPBody(conn, res);
             }
             finally {
                 (_b = (_a = res.body).close) === null || _b === void 0 ? void 0 : _b.call(_a);
             }
             if (msg.version.toLowerCase() === 'http/1.0') {
-                return;
+                const connectionHeader = fieldGet(msg.headers, 'connection');
+                if (!connectionHeader || (connectionHeader && !connectionHeader.includes(Buffer.from('keep-alive'))))
+                    return;
             }
-            while ((yield reqBody.read()).length > 0) { /*empty*/ } //find out what this does
+            else if (msg.version.toLowerCase() === 'http/1.1') {
+                const connectionHeader = fieldGet(msg.headers, 'connection');
+                if (connectionHeader && connectionHeader.some((buf) => { return buf.equals(Buffer.from('close')); }))
+                    return;
+            }
+            while ((yield reqBody.read()).length > 0) { /*empty*/ }
+            ;
         }
     });
 }
@@ -203,6 +213,7 @@ function writeHTTPHeader(conn, res) {
             console.assert(!fieldGet(res.headers, 'Content-Length'));
             fieldSet(res.headers, 'Content-Length', res.body.length.toString());
         }
+        fieldSet(res.headers, 'Connection', 'keep-alive');
         yield soWrite(conn, encodeHTTPRes(res)); //sends headers
     });
 }
@@ -271,9 +282,12 @@ function handleReq(body, req) {
             case uri.startsWith('/files/'):
                 validateFilePath(uri.substring('/files/'.length));
                 return yield staticFileHandler(uri.substring('/files/'.length), req);
+            case uri === '/':
+                return yield staticFileHandler('home.html', req);
+            //fieldSet(res.headers, 'content-type', 'text/plain');
+            //res.body = readerFromMemory(Buffer.from('Hello World!', 'utf-8'));
             default:
-                fieldSet(res.headers, 'content-type', 'text/plain');
-                res.body = readerFromMemory(Buffer.from('Hello World!', 'utf-8'));
+                throw new httpUtils_1.HTTPError(404, 'Not found', "Requested uri doesn't exist");
         }
         return res;
     });

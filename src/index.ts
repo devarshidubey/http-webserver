@@ -1,9 +1,10 @@
 import * as net from "net";
 import { DynBuf, bufPush, bufPop, bufSize } from "./bufferUtils";
 import { HTTPReq, HTTPRes, BodyReader, HTTPError, HTTPRange } from  "./httpUtils";
-import { BufferGenerator, countSheep } from "./generatorUtils"
-import * as fs from "fs/promises"
-import * as pathLib from "path"
+import { BufferGenerator, countSheep } from "./generatorUtils";
+import {mimeTypes} from "./mime";
+import * as fs from "fs/promises";
+import * as pathLib from "path";
 
 const kMaxHeaderLen = 8*1024;
 const MAX_CHUNK_SIZE = 1024;
@@ -58,6 +59,7 @@ function soInit(socket: net.Socket): TCPConn{
 	};
 	
 	socket.on('end', ()=> {
+		console.log("poipoi");
 		conn.ended = true;
 		if(conn.reader) {
 			conn.reader.resolve(Buffer.from(''));
@@ -81,7 +83,7 @@ function soInit(socket: net.Socket): TCPConn{
 	socket.on('data', (data: Buffer)=> {
 		console.assert(conn.reader);
 		socket.pause();
-		
+		console.log(data.subarray(data.length-1))
 		conn.reader!.resolve (data); //! to avoid typescript throwing error: operation on a possible null value, but we assure TS that it will never be null by using !
 		conn.reader = null;
 	});
@@ -160,17 +162,27 @@ async function serveClient(conn: TCPConn/*socket: net.Socket*/): Promise<void>{
 		
 		try{
 			await writeHTTPHeader(conn, res);
-			if(msg.method != 'HEAD')
+			if(msg.method !== 'HEAD')
 				await writeHTTPBody(conn, res);
 		} finally {
 			res.body.close?.();
 		}
 		
+		
 		if(msg.version.toLowerCase() === 'http/1.0') {
-			return;
+			const connectionHeader: Buffer[] | null = fieldGet(msg.headers, 'connection');
+			if(!connectionHeader || (connectionHeader && !connectionHeader!.includes(Buffer.from('keep-alive'))))
+				return;
 		}
 		
-		while((await reqBody.read()).length > 0) { /*empty*/} //find out what this does
+		else if(msg.version.toLowerCase() === 'http/1.1') {
+			
+			const connectionHeader: Buffer[] | null = fieldGet(msg.headers, 'connection');
+			if(connectionHeader && connectionHeader!.some((buf) => {return buf.equals(Buffer.from('close'))}))
+				return;
+		}
+		
+		while((await reqBody.read()).length > 0) { /*empty*/};
 	}
 }
 
@@ -180,8 +192,10 @@ async function writeHTTPHeader(conn: TCPConn, res: HTTPRes): Promise<void> {
 	} 
 	else {
 		console.assert(!fieldGet(res.headers, 'Content-Length'));
-		fieldSet(res.headers, 'Content-Length', res.body.length.toString());
+		fieldSet(res.headers, 'Content-Length',  res.body.length.toString());
+		
 	}
+	//fieldSet(res.headers, 'Connection', 'keep-alive');
 	await soWrite(conn, encodeHTTPRes(res)); //sends headers
 }
 
@@ -259,9 +273,12 @@ async function handleReq(body: BodyReader, req: HTTPReq): Promise<HTTPRes> { //a
 	case uri.startsWith('/files/'):
 		validateFilePath(uri.substring('/files/'.length));
 		return await staticFileHandler(uri.substring('/files/'.length), req);
+	case uri === '/':
+		return await staticFileHandler('home.html', req);
+		//fieldSet(res.headers, 'content-type', 'text/plain');
+		//res.body = readerFromMemory(Buffer.from('Hello World!', 'utf-8'));
 	default:
-		fieldSet(res.headers, 'content-type', 'text/plain');
-		res.body = readerFromMemory(Buffer.from('Hello World!', 'utf-8'));
+		throw new HTTPError(404, 'Not found', "Requested uri doesn't exist");
 	}
 	
 	return res;
@@ -291,6 +308,7 @@ async function serveStaticFile(path: string, req: HTTPReq): Promise<HTTPRes> {
 	
 	try {
 		const fullPath = pathLib.join(__dirname, '..', 'public', path);
+		
 		fp = await fs.open(fullPath, 'r');
 		
 		const stat = await fp.stat();
