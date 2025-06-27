@@ -308,6 +308,8 @@ async function serveStaticFile(path: string, req: HTTPReq): Promise<HTTPRes> {
 	
 	try {
 		const fullPath = pathLib.join(__dirname, '..', 'public', path);
+		const extName = pathLib.extname(path);
+		const contentType = extName? mimeTypes[extName]: "text/plain";
 		
 		fp = await fs.open(fullPath, 'r');
 		
@@ -319,7 +321,7 @@ async function serveStaticFile(path: string, req: HTTPReq): Promise<HTTPRes> {
 		const size = stat.size;
 		
 		try {
-			return await staticFileResp(fp, req, size);
+			return await staticFileResp(fp, req, size, contentType);
 			
 		} catch(exc) {
 			if(exc instanceof HTTPError) {
@@ -360,7 +362,7 @@ function parseBytesRanges(ranges: Buffer[]): HTTPRange[] {
 	)
  }
  
-async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, size: number): Promise<HTTPRes> {
+async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, size: number, contentType: string): Promise<HTTPRes> {
 	try {
 		let ranges: HTTPRange[] = [];
 		const rangeField: Buffer[] | null = fieldGet(req.headers, 'Range');
@@ -374,7 +376,7 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, size: numb
 		const multipart: boolean = (ranges.length > 1);
 		try {
 			const boundary= 'boundary-' + Math.floor((Math.random()*1e10)).toString() + Math.floor((Math.random()*1e10)).toString() + Math.floor((Math.random()*1e10)).toString() + Math.floor((Math.random()*1e10)).toString();
-			const gen = await staticFileGenerator(fp, ranges, size, boundary); //Once this generator function calls: “The generator is now responsible for closing the file.” ownership transfered
+			const gen = await staticFileGenerator(fp, ranges, size, boundary, contentType); //Once this generator function calls: “The generator is now responsible for closing the file.” ownership transfered
 			const reader = await readerFromGenerator(gen); //no ownership transfer of file, but ownership transfer of generator
 			
 			return {
@@ -382,7 +384,7 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, size: numb
 				status_code: multipart? 206: 200,
 				reason: "OK",
 				headers: new Map([
-					['content-type', multipart? [Buffer.from(`multipart/byteranges; boundary=${boundary}`)]: [Buffer.from('text/plain','ascii')]], //TODO: extract from file type
+					['content-type', multipart? [Buffer.from(`multipart/byteranges; boundary=${boundary}`)]: [Buffer.from(contentType,'ascii')]], //TODO: extract from file type
 				]),
 				body: reader
 			}
@@ -429,7 +431,7 @@ function respError(code: number, reason: string, msg: string): HTTPRes {
 	}
 }
 
-async function* staticFileGenerator(fp: fs.FileHandle | null, ranges: HTTPRange[], fileSize: number, boundary: string): BufferGenerator {
+async function* staticFileGenerator(fp: fs.FileHandle | null, ranges: HTTPRange[], fileSize: number, boundary: string, contentType: string): BufferGenerator {
 	try {
 		const multipart = (ranges.length > 1);
 		for(let i = 0; i < ranges.length; i++) {
@@ -439,7 +441,7 @@ async function* staticFileGenerator(fp: fs.FileHandle | null, ranges: HTTPRange[
 			
 			//yield the header for byte range
 			if(multipart) {
-				yield Buffer.from(`--${boundary}\r\nContent-Type: text/plain\r\nContent-Range: bytes ${start}-${end}/${fileSize}\r\n\r\n`);
+				yield Buffer.from(`--${boundary}\r\nContent-Type: ${contentType}\r\nContent-Range: bytes ${start}-${end}/${fileSize}\r\n\r\n`);
 			}
 			
 			let got = 0;

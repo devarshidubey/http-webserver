@@ -59,6 +59,7 @@ const net = __importStar(require("net"));
 const bufferUtils_1 = require("./bufferUtils");
 const httpUtils_1 = require("./httpUtils");
 const generatorUtils_1 = require("./generatorUtils");
+const mime_1 = require("./mime");
 const fs = __importStar(require("fs/promises"));
 const pathLib = __importStar(require("path"));
 const kMaxHeaderLen = 8 * 1024;
@@ -213,7 +214,7 @@ function writeHTTPHeader(conn, res) {
             console.assert(!fieldGet(res.headers, 'Content-Length'));
             fieldSet(res.headers, 'Content-Length', res.body.length.toString());
         }
-        fieldSet(res.headers, 'Connection', 'keep-alive');
+        //fieldSet(res.headers, 'Connection', 'keep-alive');
         yield soWrite(conn, encodeHTTPRes(res)); //sends headers
     });
 }
@@ -315,6 +316,8 @@ function serveStaticFile(path, req) {
         let fp = null;
         try {
             const fullPath = pathLib.join(__dirname, '..', 'public', path);
+            const extName = pathLib.extname(path);
+            const contentType = extName ? mime_1.mimeTypes[extName] : "text/plain";
             fp = yield fs.open(fullPath, 'r');
             const stat = yield fp.stat();
             if (!stat.isFile()) {
@@ -322,7 +325,7 @@ function serveStaticFile(path, req) {
             }
             const size = stat.size;
             try {
-                return yield staticFileResp(fp, req, size);
+                return yield staticFileResp(fp, req, size, contentType);
             }
             catch (exc) {
                 if (exc instanceof httpUtils_1.HTTPError) {
@@ -362,7 +365,7 @@ function parseBytesRanges(ranges) {
         }
     });
 }
-function staticFileResp(fp, req, size) {
+function staticFileResp(fp, req, size, contentType) {
     return __awaiter(this, void 0, void 0, function* () {
         try {
             let ranges = [];
@@ -383,7 +386,7 @@ function staticFileResp(fp, req, size) {
                     status_code: multipart ? 206 : 200,
                     reason: "OK",
                     headers: new Map([
-                        ['content-type', multipart ? [Buffer.from(`multipart/byteranges; boundary=${boundary}`)] : [Buffer.from('text/plain', 'ascii')]], //TODO: extract from file type
+                        ['content-type', multipart ? [Buffer.from(`multipart/byteranges; boundary=${boundary}`)] : [Buffer.from(contentType, 'ascii')]], //TODO: extract from file type
                     ]),
                     body: reader
                 };
