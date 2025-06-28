@@ -75,7 +75,7 @@ const singletonHeaders = new Set([
     'host',
     'if-match',
     'if-modified-since',
-    'if-none-match',
+    //'if-none-match',
     'if-range',
     'if-unmodified-since',
     'max-forwards',
@@ -98,7 +98,6 @@ function soInit(socket) {
         reader: null
     };
     socket.on('end', () => {
-        console.log("poipoi");
         conn.ended = true;
         if (conn.reader) {
             conn.reader.resolve(Buffer.from(''));
@@ -118,7 +117,6 @@ function soInit(socket) {
     socket.on('data', (data) => {
         console.assert(conn.reader);
         socket.pause();
-        console.log(data.subarray(data.length - 1));
         conn.reader.resolve(data); //! to avoid typescript throwing error: operation on a possible null value, but we assure TS that it will never be null by using !
         conn.reader = null;
     });
@@ -184,11 +182,11 @@ function serveClient(conn /*socket: net.Socket*/) {
             const res = yield handleReq(reqBody, msg);
             try {
                 yield writeHTTPHeader(conn, res);
-                if (msg.method !== 'HEAD')
+                if (msg.method !== 'HEAD' && res.status_code != 304)
                     yield writeHTTPBody(conn, res);
             }
             finally {
-                (_b = (_a = res.body).close) === null || _b === void 0 ? void 0 : _b.call(_a);
+                yield ((_b = (_a = res.body).close) === null || _b === void 0 ? void 0 : _b.call(_a));
             }
             if (msg.version.toLowerCase() === 'http/1.0') {
                 const connectionHeader = fieldGet(msg.headers, 'connection');
@@ -210,11 +208,10 @@ function writeHTTPHeader(conn, res) {
         if (res.body.length < 0) {
             fieldSet(res.headers, 'Transfer-Encoding', 'chunked');
         }
-        else {
+        else if (res.status_code !== 304) {
             console.assert(!fieldGet(res.headers, 'Content-Length'));
             fieldSet(res.headers, 'Content-Length', res.body.length.toString());
         }
-        //fieldSet(res.headers, 'Connection', 'keep-alive');
         yield soWrite(conn, encodeHTTPRes(res)); //sends headers
     });
 }
@@ -285,10 +282,8 @@ function handleReq(body, req) {
                 return yield staticFileHandler(uri.substring('/files/'.length), req);
             case uri === '/':
                 return yield staticFileHandler('home.html', req);
-            //fieldSet(res.headers, 'content-type', 'text/plain');
-            //res.body = readerFromMemory(Buffer.from('Hello World!', 'utf-8'));
             default:
-                throw new httpUtils_1.HTTPError(404, 'Not found', "Requested uri doesn't exist");
+                throw new httpUtils_1.HTTPError(404, 'Not found', "We are sorry, but the page you requested was not found");
         }
         return res;
     });
@@ -323,9 +318,8 @@ function serveStaticFile(path, req) {
             if (!stat.isFile()) {
                 return respError(404, "NOT FOUND", "Not a regular file");
             }
-            const size = stat.size;
             try {
-                return yield staticFileResp(fp, req, size, contentType);
+                return yield staticFileResp(fp, req, stat, contentType);
             }
             catch (exc) {
                 if (exc instanceof httpUtils_1.HTTPError) {
@@ -365,9 +359,27 @@ function parseBytesRanges(ranges) {
         }
     });
 }
-function staticFileResp(fp, req, size, contentType) {
+function generateEtag(stat) {
+    return Buffer.from(`"${stat.size}-${stat.mtimeMs}"`, 'ascii');
+}
+function staticFileResp(fp, req, stat, contentType) {
     return __awaiter(this, void 0, void 0, function* () {
         try {
+            const size = stat.size;
+            const eTag = generateEtag(stat);
+            const ifNoneMatchHeader = fieldGet(req.headers, 'If-None-Match');
+            if (ifNoneMatchHeader && eTag.subarray(1, eTag.length - 1).equals(ifNoneMatchHeader[0])) {
+                return {
+                    version: 'HTTP/1.1',
+                    status_code: 304,
+                    reason: "Not Modified",
+                    headers: new Map([
+                        ['etag', [eTag]],
+                        ['cache-control', [Buffer.from('no-cache')]],
+                    ]),
+                    body: readerFromMemory(Buffer.alloc(0)),
+                };
+            }
             let ranges = [];
             const rangeField = fieldGet(req.headers, 'Range');
             if (!rangeField) {
@@ -379,7 +391,7 @@ function staticFileResp(fp, req, size, contentType) {
             const multipart = (ranges.length > 1);
             try {
                 const boundary = 'boundary-' + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString();
-                const gen = yield staticFileGenerator(fp, ranges, size, boundary); //Once this generator function calls: “The generator is now responsible for closing the file.” ownership transfered
+                const gen = yield staticFileGenerator(fp, ranges, size, boundary, contentType); //Once this generator function calls: “The generator is now responsible for closing the file.” ownership transfered
                 const reader = yield readerFromGenerator(gen); //no ownership transfer of file, but ownership transfer of generator
                 return {
                     version: 'HTTP/1.1',
@@ -387,6 +399,8 @@ function staticFileResp(fp, req, size, contentType) {
                     reason: "OK",
                     headers: new Map([
                         ['content-type', multipart ? [Buffer.from(`multipart/byteranges; boundary=${boundary}`)] : [Buffer.from(contentType, 'ascii')]], //TODO: extract from file type
+                        ['etag', [eTag]],
+                        ['cache-control', [Buffer.from('no-cache')]],
                     ]),
                     body: reader
                 };
@@ -396,7 +410,8 @@ function staticFileResp(fp, req, size, contentType) {
             }
         }
         catch (err) {
-            yield (fp === null || fp === void 0 ? void 0 : fp.close()); //if this function throws, it is its own responsibility to close the file before ownership is transfered
+            //await fp?.close(); //if this function throws, it is its own responsibility to close the file before ownership is transfered
+            console.error(err);
             if (err instanceof httpUtils_1.HTTPError) {
                 return respError(err.code, err.reason, err.message);
             }
@@ -430,10 +445,10 @@ function respError(code, reason, msg) {
         headers: new Map([
             ["content-type", [Buffer.from("text/plain", 'ascii')]],
         ]),
-        body: readerFromMemory(Buffer.from(msg, 'ascii')),
+        body: readerFromMemory((0, httpUtils_1.generateHTTPErrorPage)(code, reason, msg)),
     };
 }
-function staticFileGenerator(fp, ranges, fileSize, boundary) {
+function staticFileGenerator(fp, ranges, fileSize, boundary, contentType) {
     return __asyncGenerator(this, arguments, function* staticFileGenerator_1() {
         try {
             const multipart = (ranges.length > 1);
@@ -442,7 +457,7 @@ function staticFileGenerator(fp, ranges, fileSize, boundary) {
                 let size = end - start + 1;
                 //yield the header for byte range
                 if (multipart) {
-                    yield yield __await(Buffer.from(`--${boundary}\r\nContent-Type: text/plain\r\nContent-Range: bytes ${start}-${end}/${fileSize}\r\n\r\n`));
+                    yield yield __await(Buffer.from(`--${boundary}\r\nContent-Type: ${contentType}\r\nContent-Range: bytes ${start}-${end}/${fileSize}\r\n\r\n`));
                 }
                 let got = 0;
                 const buf = Buffer.allocUnsafe(64 * 1024);
@@ -482,6 +497,7 @@ function readerFromGenerator(gen) {
                     return r.value;
                 }),
                 close: () => __awaiter(this, void 0, void 0, function* () {
+                    yield gen.next();
                     yield gen.return();
                 })
             };
@@ -511,14 +527,11 @@ function readerFromReq(conn, buf, req) {
     return __awaiter(this, void 0, void 0, function* () {
         let bodyLen = -1;
         const contentLen = fieldGet(req.headers, 'Content-Length');
-        if (contentLen && contentLen.length === 1) {
+        if (contentLen) {
             bodyLen = parseDec(contentLen[0]);
             if (isNaN(bodyLen)) {
                 throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', 'Invalid Content-Length');
             }
-        }
-        else if (contentLen && contentLen.length > 1) {
-            throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', 'Duplicate Content-Length');
         }
         const bodyAllowed = !(req.method === 'GET' || req.method === 'HEAD' || req.method === 'TRACE');
         const transferEncoding = fieldGet(req.headers, 'Transfer-Encoding'); //TODO: rfc 9110 6.1: if both transfer-encoding: chunked and contentLen: reject or consider T-E and immediately close connection for security
@@ -682,12 +695,13 @@ function parseHeader(header, headers) {
         if (headers.has(key))
             throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', "Multiple Range headers are not allowed");
         if (!validateRangeHeader(fieldValue)) {
-            console.log("invalid range header");
             headers.set(key, [Buffer.from("0-")]);
             return;
         }
         fieldValue = fieldValue.subarray(6);
     }
+    if (key === 'if-none-match' && headers.has(key))
+        throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', "Multiple headers for singleton header field If-None-Match");
     let openQuote = false;
     let start = 0;
     let parts = [];
@@ -731,6 +745,9 @@ function parseHeader(header, headers) {
     }
     if (!headers.has(key)) {
         headers.set(key, parts);
+    }
+    else if (singletonHeaders.has(key)) {
+        throw new httpUtils_1.HTTPError(400, 'Bad request', `Multiple field values for singleton header ${key}`);
     }
     else {
         headers.get(key).push(...parts);
@@ -790,7 +807,7 @@ function newConn(conn /*socket: net.Socket*/) {
             yield serveClient(conn);
         }
         catch (exc) {
-            console.error('exception', exc);
+            console.error(exc);
             if (exc instanceof httpUtils_1.HTTPError) {
                 const message = exc.message;
                 const res = {
@@ -798,9 +815,9 @@ function newConn(conn /*socket: net.Socket*/) {
                     status_code: exc.code,
                     reason: exc.reason,
                     headers: new Map([
-                        ["content-type:", [Buffer.from("text/plain", 'ascii')]],
+                        ["content-type", [Buffer.from("text/html", 'ascii')]],
                     ]),
-                    body: readerFromMemory(Buffer.from(message, 'utf-8')),
+                    body: readerFromMemory((0, httpUtils_1.generateHTTPErrorPage)(exc.code, exc.reason, exc.message)),
                 };
                 try {
                     yield writeHTTPHeader(conn, res);
@@ -809,6 +826,9 @@ function newConn(conn /*socket: net.Socket*/) {
                 catch (exc) {
                     console.error('exception', exc);
                 }
+            }
+            else {
+                console.error('exception', exc);
             }
         }
         finally {

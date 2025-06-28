@@ -43,7 +43,6 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const net = __importStar(require("net"));
-const promises_1 = require("timers/promises");
 class RFCCompliantHTTPClient {
     constructor(options) {
         this.options = options;
@@ -87,6 +86,7 @@ class RFCCompliantHTTPClient {
                 `Host: ${this.options.host}:${this.options.port}`,
                 `Connection: ${this.options.keepAlive ? 'keep-alive' : 'close'}`,
                 'User-Agent: RFCCompliantHTTPClient/1.0',
+                'If-None-Match: "25557-1750705642118.8445"',
                 '\r\n'
             ].join('\r\n');
             return new Promise((resolve, reject) => {
@@ -130,10 +130,10 @@ class RFCCompliantHTTPClient {
     });
     try {
         // First request (reuses connection)
-        yield client.request('/');
-        console.log('First request completed');
+        // await client.request('/');
+        //console.log('First request completed');
         // Wait 2 seconds (simulates idle time)
-        yield (0, promises_1.setTimeout)(5000);
+        // await setTimeout(5000);
         // Second request (same connection if keepAlive)
         yield client.request('/files/test_read');
         console.log('Second request completed');

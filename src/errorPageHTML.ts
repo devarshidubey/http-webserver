@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+`<!DOCTYPE html>
 <html lang="en">
 
 <head>
@@ -109,8 +109,8 @@
       <h1 class="title">Welcome</h1>
       <h2 class="subtitle">To My Portfolio</h2>
       <p class="description">
-        This is a self hosted web server running on Raspberry pi<br />
-        And this server is built from scratch without using any framework!
+        I'm a creative developer passionate about building beautiful, functional web experiences.<br />
+        Explore my work and get in touch!
       </p>
       <div class="nav-buttons">
         <a href="#projects">Projects</a>
@@ -122,4 +122,4 @@
 </body>
 
 </html>
-
+`

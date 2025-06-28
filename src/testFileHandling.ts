@@ -55,6 +55,7 @@ class RFCCompliantHTTPClient {
       `Host: ${this.options.host}:${this.options.port}`,
       `Connection: ${this.options.keepAlive ? 'keep-alive' : 'close'}`,
       'User-Agent: RFCCompliantHTTPClient/1.0',
+      'If-None-Match: "25557-1750705642118.8445"',
       '\r\n'
     ].join('\r\n');
 
@@ -101,11 +102,11 @@ class RFCCompliantHTTPClient {
 
   try {
     // First request (reuses connection)
-    await client.request('/');
-    console.log('First request completed');
+   // await client.request('/');
+    //console.log('First request completed');
 
     // Wait 2 seconds (simulates idle time)
-    await setTimeout(5000);
+   // await setTimeout(5000);
 
     // Second request (same connection if keepAlive)
     await client.request('/files/test_read');

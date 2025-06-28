@@ -1,9 +1,10 @@
 import * as net from "net";
 import { DynBuf, bufPush, bufPop, bufSize } from "./bufferUtils";
-import { HTTPReq, HTTPRes, BodyReader, HTTPError, HTTPRange } from  "./httpUtils";
+import { HTTPReq, HTTPRes, BodyReader, HTTPError, HTTPRange, generateHTTPErrorPage } from  "./httpUtils";
 import { BufferGenerator, countSheep } from "./generatorUtils";
 import {mimeTypes} from "./mime";
 import * as fs from "fs/promises";
+import { Stats } from 'fs';
 import * as pathLib from "path";
 
 const kMaxHeaderLen = 8*1024;
@@ -19,7 +20,7 @@ const singletonHeaders = new Set([
   'host',
   'if-match',
   'if-modified-since',
-  'if-none-match',
+  //'if-none-match',
   'if-range',
   'if-unmodified-since',
   'max-forwards',
@@ -59,7 +60,6 @@ function soInit(socket: net.Socket): TCPConn{
 	};
 	
 	socket.on('end', ()=> {
-		console.log("poipoi");
 		conn.ended = true;
 		if(conn.reader) {
 			conn.reader.resolve(Buffer.from(''));
@@ -83,7 +83,6 @@ function soInit(socket: net.Socket): TCPConn{
 	socket.on('data', (data: Buffer)=> {
 		console.assert(conn.reader);
 		socket.pause();
-		console.log(data.subarray(data.length-1))
 		conn.reader!.resolve (data); //! to avoid typescript throwing error: operation on a possible null value, but we assure TS that it will never be null by using !
 		conn.reader = null;
 	});
@@ -159,13 +158,12 @@ async function serveClient(conn: TCPConn/*socket: net.Socket*/): Promise<void>{
 		const reqBody: BodyReader = await readerFromReq(conn, buf, msg);
 		
 		const res: HTTPRes = await handleReq(reqBody, msg);
-		
 		try{
 			await writeHTTPHeader(conn, res);
-			if(msg.method !== 'HEAD')
+			if(msg.method !== 'HEAD' && res.status_code != 304)
 				await writeHTTPBody(conn, res);
 		} finally {
-			res.body.close?.();
+			await res.body.close?.();
 		}
 		
 		
@@ -187,15 +185,15 @@ async function serveClient(conn: TCPConn/*socket: net.Socket*/): Promise<void>{
 }
 
 async function writeHTTPHeader(conn: TCPConn, res: HTTPRes): Promise<void> {
-	if(res.body.length < 0 ) {
+	
+	if(res.body.length < 0) {
 		fieldSet(res.headers, 'Transfer-Encoding', 'chunked');
 	} 
-	else {
+	else if(res.status_code !== 304){
 		console.assert(!fieldGet(res.headers, 'Content-Length'));
 		fieldSet(res.headers, 'Content-Length',  res.body.length.toString());
-		
 	}
-	//fieldSet(res.headers, 'Connection', 'keep-alive');
+	
 	await soWrite(conn, encodeHTTPRes(res)); //sends headers
 }
 
@@ -275,10 +273,8 @@ async function handleReq(body: BodyReader, req: HTTPReq): Promise<HTTPRes> { //a
 		return await staticFileHandler(uri.substring('/files/'.length), req);
 	case uri === '/':
 		return await staticFileHandler('home.html', req);
-		//fieldSet(res.headers, 'content-type', 'text/plain');
-		//res.body = readerFromMemory(Buffer.from('Hello World!', 'utf-8'));
 	default:
-		throw new HTTPError(404, 'Not found', "Requested uri doesn't exist");
+		throw new HTTPError(404, 'Not found', "We are sorry, but the page you requested was not found");
 	}
 	
 	return res;
@@ -317,11 +313,9 @@ async function serveStaticFile(path: string, req: HTTPReq): Promise<HTTPRes> {
 		if(!stat.isFile()) {
 			return respError(404, "NOT FOUND", "Not a regular file");
 		}
-		
-		const size = stat.size;
-		
+				
 		try {
-			return await staticFileResp(fp, req, size, contentType);
+			return await staticFileResp(fp, req, stat, contentType);
 			
 		} catch(exc) {
 			if(exc instanceof HTTPError) {
@@ -362,8 +356,29 @@ function parseBytesRanges(ranges: Buffer[]): HTTPRange[] {
 	)
  }
  
-async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, size: number, contentType: string): Promise<HTTPRes> {
+ function generateEtag(stat: Stats): Buffer {
+	return Buffer.from(`"${stat.size}-${stat.mtimeMs}"`, 'ascii');
+ }
+ 
+async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, stat: Stats, contentType: string): Promise<HTTPRes> {
 	try {
+		const size = stat.size;
+		const eTag: Buffer = generateEtag(stat);
+		const ifNoneMatchHeader: Buffer[] | null = fieldGet(req.headers, 'If-None-Match');
+		
+		if(ifNoneMatchHeader && eTag.subarray(1, eTag.length-1).equals(ifNoneMatchHeader![0])) {
+			return {
+				version: 'HTTP/1.1',
+				status_code:  304,
+				reason: "Not Modified",
+				headers: new Map([
+					['etag', [eTag]],
+					['cache-control', [Buffer.from('no-cache')]],
+				]),
+				body: readerFromMemory(Buffer.alloc(0)),
+			}
+		}
+		
 		let ranges: HTTPRange[] = [];
 		const rangeField: Buffer[] | null = fieldGet(req.headers, 'Range');
 		
@@ -385,6 +400,8 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, size: numb
 				reason: "OK",
 				headers: new Map([
 					['content-type', multipart? [Buffer.from(`multipart/byteranges; boundary=${boundary}`)]: [Buffer.from(contentType,'ascii')]], //TODO: extract from file type
+					['etag', [eTag]],
+					['cache-control', [Buffer.from('no-cache')]],
 				]),
 				body: reader
 			}
@@ -393,7 +410,8 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, size: numb
 		}
 		
 	} catch(err) {
-		await fp?.close(); //if this function throws, it is its own responsibility to close the file before ownership is transfered
+		//await fp?.close(); //if this function throws, it is its own responsibility to close the file before ownership is transfered
+		console.error(err);
 		if(err instanceof HTTPError) {
 			return respError(err.code, err.reason, err.message)
 		}
@@ -427,7 +445,7 @@ function respError(code: number, reason: string, msg: string): HTTPRes {
 		headers : new Map<string, Buffer[]>([
 			["content-type", [Buffer.from("text/plain", 'ascii')]],
 		]),
-		body: readerFromMemory(Buffer.from(msg, 'ascii')),
+		body: readerFromMemory(generateHTTPErrorPage(code, reason, msg)),
 	}
 }
 
@@ -479,6 +497,7 @@ async function readerFromGenerator(gen: BufferGenerator): Promise<BodyReader> {
 				return r.value;
 			},
 			close: async(): Promise<void> => { //ownership of generator transfered to body reader object
+				await gen.next();
 				await gen.return();
 			}
 		}
@@ -509,14 +528,11 @@ async function readerFromReq(conn: TCPConn, buf: DynBuf,  req: HTTPReq): Promise
 	
 	const contentLen: Buffer[] | null = fieldGet(req.headers, 'Content-Length');
 
-	if(contentLen && contentLen!.length === 1) {
+	if(contentLen) {
 		bodyLen = parseDec(contentLen![0]);
 		if(isNaN(bodyLen)) {
 			throw new HTTPError(400, 'BAD REQUEST', 'Invalid Content-Length');
 		}
-	}
-	else if(contentLen && contentLen!.length > 1) {
-		throw new HTTPError(400, 'BAD REQUEST', 'Duplicate Content-Length');
 	}
 	
 	const bodyAllowed = !(req.method === 'GET' || req.method === 'HEAD' || req.method === 'TRACE');
@@ -704,12 +720,15 @@ function parseHeader(header: Buffer, headers: Map<string, Buffer[]>): void {
 	if(key === 'range') {
 		if(headers.has(key)) throw new HTTPError(400, 'BAD REQUEST', "Multiple Range headers are not allowed");
 		if(!validateRangeHeader(fieldValue)) {
-			console.log("invalid range header");
 			headers.set(key, [Buffer.from("0-")]);
 			return;
 		}
 		fieldValue = fieldValue.subarray(6);
 	}
+	
+	
+	if(key === 'if-none-match' && headers.has(key)) throw new HTTPError(400, 'BAD REQUEST', "Multiple headers for singleton header field If-None-Match");
+
 	
 	let openQuote = false;
 	let start = 0;
@@ -760,7 +779,10 @@ function parseHeader(header: Buffer, headers: Map<string, Buffer[]>): void {
 
 	if(!headers.has(key)) {
 		headers.set(key, parts);
-	} else {
+	} else if(singletonHeaders.has(key)) {
+		throw new HTTPError(400, 'Bad request', `Multiple field values for singleton header ${key}`);
+	}
+	else {
 		headers.get(key)!.push(...parts);
 	}
 	
@@ -824,7 +846,7 @@ async function newConn(conn: TCPConn/*socket: net.Socket*/): Promise<void> {
 	try {
 		await serveClient(conn);
 	} catch(exc) {
-		console.error('exception', exc)
+		console.error(exc);
 		if(exc instanceof HTTPError) {
 			const message = exc.message;
 			const res: HTTPRes = {
@@ -832,14 +854,17 @@ async function newConn(conn: TCPConn/*socket: net.Socket*/): Promise<void> {
 				status_code: exc.code,
 				reason: exc.reason,
 				headers : new Map<string, Buffer[]>([
-					["content-type:", [Buffer.from("text/plain", 'ascii')]],
+					["content-type", [Buffer.from("text/html", 'ascii')]],
 				]),
-				body: readerFromMemory(Buffer.from(message, 'utf-8')),
+				body: readerFromMemory(generateHTTPErrorPage(exc.code, exc.reason, exc.message)),
 			}
 			try {
 				await writeHTTPHeader(conn, res);
 				await writeHTTPBody(conn, res);
 			} catch(exc) {console.error('exception', exc)}
+		} 
+		else {
+			console.error('exception', exc);
 		}
 	} finally {
 		conn.socket.destroy();
