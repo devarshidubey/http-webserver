@@ -6,6 +6,9 @@ import {mimeTypes} from "./mime";
 import * as fs from "fs/promises";
 import { Stats } from 'fs';
 import * as pathLib from "path";
+import * as stream from "stream";
+import { pipeline } from "stream/promises";
+import { createGzip } from "zlib";
 
 const kMaxHeaderLen = 8*1024;
 const MAX_CHUNK_SIZE = 1024;
@@ -20,7 +23,7 @@ const singletonHeaders = new Set([
   'host',
   'if-match',
   'if-modified-since',
-  //'if-none-match',
+  'if-none-match',
   'if-range',
   'if-unmodified-since',
   'max-forwards',
@@ -35,7 +38,6 @@ const strictListHeaders = new Set([
   'content-encoding',
   'accept-ranges'
 ]); //these list headers don't allow empty field values
-
 
 
 type TCPConn = {
@@ -156,13 +158,17 @@ async function serveClient(conn: TCPConn/*socket: net.Socket*/): Promise<void>{
 		}
 		
 		const reqBody: BodyReader = await readerFromReq(conn, buf, msg);
-		
+		//console.log(msg);
 		const res: HTTPRes = await handleReq(reqBody, msg);
+		
+		
 		try{
+			enableCompression(msg, res);
 			await writeHTTPHeader(conn, res);
 			if(msg.method !== 'HEAD' && res.status_code != 304)
 				await writeHTTPBody(conn, res);
 		} finally {
+			//console.log(res);
 			await res.body.close?.();
 		}
 		
@@ -181,6 +187,88 @@ async function serveClient(conn: TCPConn/*socket: net.Socket*/): Promise<void>{
 		}
 		
 		while((await reqBody.read()).length > 0) { /*empty*/};
+	}
+}
+
+function enableCompression(req: HTTPReq, res: HTTPRes): void { //TODO: check for weight q=x
+	const mediaType: Buffer[] | null = fieldGet(res.headers, 'Content-Type');
+	const compressibleTypes = new Set([
+		"text/html", "text/css", "application/javascript",	"application/json", "image/svg+xml", "application/xml",	"text/plain"
+	]);
+
+	fieldSet(res.headers, 'Vary', 'accept-encoding');
+	
+	if(!mediaType || !compressibleTypes.has(mediaType![0].toString('ascii'))) return;
+
+	const codec: Buffer[] | null = fieldGet(req.headers, 'Accept-Encoding');
+	
+	if(fieldGet(req.headers, 'Range')) return;
+	if(!codec || !codec.some((el)=>{return el.equals(Buffer.from('gzip'))})) return;
+	
+	fieldSet(res.headers, 'Content-Encoding', 'gzip');
+	res.body = gzipFilter(res.body);
+}
+
+function checkCompresssion(codec: Buffer[]): boolean {
+	let idnAllow = true;
+	let gzipAllow = true;
+	let wildcard = false;
+	
+	for(let i = 0; i < codec.length; ++i) {
+		const enc = codec[i].toString('ascii');
+		if(enc.startsWith('gzip')) {
+			if (enc.includes('q=0')) gzipAllow = false;
+			else return true;
+		}
+		else if(enc.startsWith('identity') && enc.includes('q=0'))
+			idnAllow = false;
+		else if(enc === '*' && !enc.includes('q=0'))
+			wildcard  = true;
+	}
+	
+	//check if * was present
+	if(wildcard && gzipAllow) return true;
+	//check if identity is disallowed
+	if(!idnAllow) throw new HTTPError(406, 'Not Acceptable', 'Requested content encoding not available');
+	return false;
+}
+
+function bodyToStream(body: BodyReader): stream.Readable {
+	let self: stream.Readable | null = null;
+	
+	self = new stream.Readable({
+		read: async () => {
+			try{
+				const data = await body.read();
+				self!.push(data.length>0? data: null);
+			} catch(err) {
+				self!.destroy(err instanceof Error? err: new Error('IO'));
+			}
+		}
+	})
+	
+	return self!;
+}
+
+function gzipFilter(body: BodyReader): BodyReader {
+	const input: stream.Readable = bodyToStream(body);
+	const gz: stream.Duplex = createGzip();
+	
+	(async() => {
+		try {await pipeline(input, gz);}
+		catch(err) {gz.destroy(err instanceof Error? err: new Error('pipline'));}
+	})();
+	
+	let iter: AsyncIterator<Buffer> = gz[Symbol.asyncIterator]();	
+	return {
+		length: -1,
+		
+		read: async(): Promise<Buffer> => {
+			const r: IteratorResult<Buffer, void> = await iter.next();
+			return r.done? Buffer.alloc(0): r.value;
+		},
+		
+		close: body.close
 	}
 }
 
@@ -305,7 +393,7 @@ async function serveStaticFile(path: string, req: HTTPReq): Promise<HTTPRes> {
 	try {
 		const fullPath = pathLib.join(__dirname, '..', 'public', path);
 		const extName = pathLib.extname(path);
-		const contentType = extName? mimeTypes[extName]: "text/plain";
+		const contentType = extName? mimeTypes[extName]: "text/plain; charset=utf-8";
 		
 		fp = await fs.open(fullPath, 'r');
 		
@@ -339,23 +427,7 @@ async function serveStaticFile(path: string, req: HTTPReq): Promise<HTTPRes> {
 	}
 }
 
-function parseBytesRanges(ranges: Buffer[]): HTTPRange[] {
-	return ranges.map(
-		(range)=> {
-			const idx = range.indexOf(Buffer.from('-'));
-			if(idx == 0) {
-				return parseDec(range.subarray(idx+1));
-			}
-			else if(idx == range.length - 1) {
-				return [parseDec(range.subarray(0, idx)), null]
-			} 
-			else {
-				return [parseDec(range.subarray(0, idx)), parseDec(range.subarray(idx+1))];
-			}
-		}
-	)
- }
- 
+
  function generateEtag(stat: Stats): Buffer {
 	return Buffer.from(`"${stat.size}-${stat.mtimeMs}"`, 'ascii');
  }
@@ -374,6 +446,7 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, stat: Stat
 				headers: new Map([
 					['etag', [eTag]],
 					['cache-control', [Buffer.from('no-cache')]],
+					['accept-ranges', [Buffer.from('bytes')]],
 				]),
 				body: readerFromMemory(Buffer.alloc(0)),
 			}
@@ -385,23 +458,33 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, stat: Stat
 		if(!rangeField) {
 			ranges.push([0, null]);
 		} else {
-			ranges = parseBytesRanges(rangeField!);
+			ranges = parseBytesRanges(rangeField!, size);
 		}
 
 		const multipart: boolean = (ranges.length > 1);
+		let partialContent: boolean = true;
+		let contentLen: number | null = null;
+		
+		if(!multipart) {
+			const [st, end] = processRange(ranges[0], size);
+			partialContent = partialContent && !(st === 0 && end === size-1);
+			contentLen = end - st  + 1;
+		}
+		
 		try {
 			const boundary= 'boundary-' + Math.floor((Math.random()*1e10)).toString() + Math.floor((Math.random()*1e10)).toString() + Math.floor((Math.random()*1e10)).toString() + Math.floor((Math.random()*1e10)).toString();
 			const gen = await staticFileGenerator(fp, ranges, size, boundary, contentType); //Once this generator function calls: “The generator is now responsible for closing the file.” ownership transfered
-			const reader = await readerFromGenerator(gen); //no ownership transfer of file, but ownership transfer of generator
+			const reader = await readerFromGenerator(gen, contentLen? contentLen: -1); //no ownership transfer of file, but ownership transfer of generator
 			
 			return {
 				version: 'HTTP/1.1',
-				status_code: multipart? 206: 200,
-				reason: "OK",
+				status_code: (multipart||partialContent)? 206: 200,
+				reason: (multipart||partialContent)? 'Partial Content': "OK",
 				headers: new Map([
 					['content-type', multipart? [Buffer.from(`multipart/byteranges; boundary=${boundary}`)]: [Buffer.from(contentType,'ascii')]], //TODO: extract from file type
 					['etag', [eTag]],
 					['cache-control', [Buffer.from('no-cache')]],
+					['accept-ranges', [Buffer.from('bytes')]],
 				]),
 				body: reader
 			}
@@ -412,7 +495,20 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, stat: Stat
 	} catch(err) {
 		//await fp?.close(); //if this function throws, it is its own responsibility to close the file before ownership is transfered
 		console.error(err);
+		
 		if(err instanceof HTTPError) {
+			if (err.code === 416) {
+				return {
+					version: 'HTTP/1.1',
+					status_code: 416,
+					reason: 'Range Not Satisfiable',
+					headers: new Map([
+						['content-range', [Buffer.from(`bytes */${stat.size}`)]], // ← crucial
+						['content-type', [Buffer.from('text/plain')]],
+					]),
+					body: readerFromMemory(Buffer.from('Range Not Satisfiable')),
+				};
+			}
 			return respError(err.code, err.reason, err.message)
 		}
 		throw new HTTPError(500, "Internal server error", "Unknown server error");
@@ -420,6 +516,28 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, stat: Stat
 		await fp?.close();
 	}
 }
+
+function parseBytesRanges(ranges: Buffer[], size: number): HTTPRange[] {
+	return ranges.map(
+		(range): HTTPRange => {
+			const idx = range.indexOf(Buffer.from('-'));
+			if(idx == 0) {
+				return parseDec(range.subarray(idx+1));
+			}
+			else if(idx == range.length - 1) {
+				const parsedRange: [number, null] = [parseDec(range.subarray(0, idx)), null]
+				if(parsedRange[0] >= size) throw new HTTPError(416, "Range Not Satisfiable", "Range field is out of bounds");
+				return parsedRange;
+			} 
+			else {
+				const parsedRange: [number, number] = [parseDec(range.subarray(0, idx)), parseDec(range.subarray(idx+1))];
+				if(parsedRange[0] >= size) throw new HTTPError(416, "Range Not Satisfiable", "Range field is out of bounds");
+				return parsedRange;
+			}
+		}
+	)
+ }
+ 
 
 function processRange(range: HTTPRange, fileSize:number): number[] {
 	if(typeof(range) === "number") {
@@ -467,7 +585,8 @@ async function* staticFileGenerator(fp: fs.FileHandle | null, ranges: HTTPRange[
 			
 			//yield the byte range
 			while(got < size) {
-				const data = await fp!.read(buf, 0, size - got, start);
+				const chunkSize = Math.min(buf.length, size - got);
+				const data = await fp!.read(buf, 0, chunkSize, start);
 				got += data.bytesRead;
 				start += data.bytesRead;
 				yield data.buffer.subarray(0, data.bytesRead);
@@ -484,10 +603,10 @@ async function* staticFileGenerator(fp: fs.FileHandle | null, ranges: HTTPRange[
 	}
 }
 
-async function readerFromGenerator(gen: BufferGenerator): Promise<BodyReader> {
+async function readerFromGenerator(gen: BufferGenerator, length = -1): Promise<BodyReader> {
 	try {
 		return {
-			length: -1,
+			length: length,
 			read: async(): Promise<Buffer> => {
 				const r = await gen.next();
 				if(r.done) {
@@ -681,6 +800,7 @@ function cutMessage(buf: DynBuf): null | HTTPReq{
 	if(idx+1 >= kMaxHeaderLen) {
 		throw new HTTPError(431, "Header too long", 'Request Header Fields Too Large');
 	}
+	console.log(buf.data.subarray(buf.readOffset, buf.readOffset+idx+4).toString('ascii'));
 	const msg: HTTPReq = parseHTTPReq(buf.data.subarray(buf.readOffset, buf.readOffset+idx+4));//Buffer.from(buf.data.subarray(buf.readOffset, buf.readOffset+idx+1));
 	
 	bufPop(buf, idx+4); //pop from front: buffer, len
@@ -726,8 +846,11 @@ function parseHeader(header: Buffer, headers: Map<string, Buffer[]>): void {
 		fieldValue = fieldValue.subarray(6);
 	}
 	
-	
-	if(key === 'if-none-match' && headers.has(key)) throw new HTTPError(400, 'BAD REQUEST', "Multiple headers for singleton header field If-None-Match");
+	else if(singletonHeaders.has(key)) {
+		if(headers.has(key)) throw new HTTPError(400, 'BAD REQUEST', `Multiple headers for singleton header field ${key}`);
+		headers.set(key, [fieldValue]);
+		return;
+	}
 
 	
 	let openQuote = false;

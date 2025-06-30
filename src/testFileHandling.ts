@@ -55,7 +55,9 @@ class RFCCompliantHTTPClient {
       `Host: ${this.options.host}:${this.options.port}`,
       `Connection: ${this.options.keepAlive ? 'keep-alive' : 'close'}`,
       'User-Agent: RFCCompliantHTTPClient/1.0',
-      'If-None-Match: "25557-1750705642118.8445"',
+      //'If-None-Match: "25557-1750705642118.8445"',
+      //'Accept-Encoding: gzip, deflate, br, zstd',
+      'Range: bytes=13927644-',
       '\r\n'
     ].join('\r\n');
 
@@ -109,7 +111,7 @@ class RFCCompliantHTTPClient {
    // await setTimeout(5000);
 
     // Second request (same connection if keepAlive)
-    await client.request('/files/test_read');
+    await client.request('/files/som.mp4');
     console.log('Second request completed');
 
   } finally {

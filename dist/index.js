@@ -62,6 +62,9 @@ const generatorUtils_1 = require("./generatorUtils");
 const mime_1 = require("./mime");
 const fs = __importStar(require("fs/promises"));
 const pathLib = __importStar(require("path"));
+const stream = __importStar(require("stream"));
+const promises_1 = require("stream/promises");
+const zlib_1 = require("zlib");
 const kMaxHeaderLen = 8 * 1024;
 const MAX_CHUNK_SIZE = 1024;
 let cachedDate = null;
@@ -75,7 +78,7 @@ const singletonHeaders = new Set([
     'host',
     'if-match',
     'if-modified-since',
-    //'if-none-match',
+    'if-none-match',
     'if-range',
     'if-unmodified-since',
     'max-forwards',
@@ -179,13 +182,16 @@ function serveClient(conn /*socket: net.Socket*/) {
                 continue;
             }
             const reqBody = yield readerFromReq(conn, buf, msg);
+            //console.log(msg);
             const res = yield handleReq(reqBody, msg);
             try {
+                enableCompression(msg, res);
                 yield writeHTTPHeader(conn, res);
                 if (msg.method !== 'HEAD' && res.status_code != 304)
                     yield writeHTTPBody(conn, res);
             }
             finally {
+                //console.log(res);
                 yield ((_b = (_a = res.body).close) === null || _b === void 0 ? void 0 : _b.call(_a));
             }
             if (msg.version.toLowerCase() === 'http/1.0') {
@@ -202,6 +208,83 @@ function serveClient(conn /*socket: net.Socket*/) {
             ;
         }
     });
+}
+function enableCompression(req, res) {
+    const mediaType = fieldGet(res.headers, 'Content-Type');
+    const compressibleTypes = new Set([
+        "text/html", "text/css", "application/javascript", "application/json", "image/svg+xml", "application/xml", "text/plain"
+    ]);
+    fieldSet(res.headers, 'Vary', 'accept-encoding');
+    if (!mediaType || !compressibleTypes.has(mediaType[0].toString('ascii')))
+        return;
+    const codec = fieldGet(req.headers, 'Accept-Encoding');
+    if (fieldGet(req.headers, 'Range'))
+        return;
+    if (!codec || !codec.some((el) => { return el.equals(Buffer.from('gzip')); }))
+        return;
+    fieldSet(res.headers, 'Content-Encoding', 'gzip');
+    res.body = gzipFilter(res.body);
+}
+function checkCompresssion(codec) {
+    let idnAllow = true;
+    let gzipAllow = true;
+    let wildcard = false;
+    for (let i = 0; i < codec.length; ++i) {
+        const enc = codec[i].toString('ascii');
+        if (enc.startsWith('gzip')) {
+            if (enc.includes('q=0'))
+                gzipAllow = false;
+            else
+                return true;
+        }
+        else if (enc.startsWith('identity') && enc.includes('q=0'))
+            idnAllow = false;
+        else if (enc === '*' && !enc.includes('q=0'))
+            wildcard = true;
+    }
+    //check if * was present
+    if (wildcard && gzipAllow)
+        return true;
+    //check if identity is disallowed
+    if (!idnAllow)
+        throw new httpUtils_1.HTTPError(406, 'Not Acceptable', 'Requested content encoding not available');
+    return false;
+}
+function bodyToStream(body) {
+    let self = null;
+    self = new stream.Readable({
+        read: () => __awaiter(this, void 0, void 0, function* () {
+            try {
+                const data = yield body.read();
+                self.push(data.length > 0 ? data : null);
+            }
+            catch (err) {
+                self.destroy(err instanceof Error ? err : new Error('IO'));
+            }
+        })
+    });
+    return self;
+}
+function gzipFilter(body) {
+    const input = bodyToStream(body);
+    const gz = (0, zlib_1.createGzip)();
+    (() => __awaiter(this, void 0, void 0, function* () {
+        try {
+            yield (0, promises_1.pipeline)(input, gz);
+        }
+        catch (err) {
+            gz.destroy(err instanceof Error ? err : new Error('pipline'));
+        }
+    }))();
+    let iter = gz[Symbol.asyncIterator]();
+    return {
+        length: -1,
+        read: () => __awaiter(this, void 0, void 0, function* () {
+            const r = yield iter.next();
+            return r.done ? Buffer.alloc(0) : r.value;
+        }),
+        close: body.close
+    };
 }
 function writeHTTPHeader(conn, res) {
     return __awaiter(this, void 0, void 0, function* () {
@@ -312,7 +395,7 @@ function serveStaticFile(path, req) {
         try {
             const fullPath = pathLib.join(__dirname, '..', 'public', path);
             const extName = pathLib.extname(path);
-            const contentType = extName ? mime_1.mimeTypes[extName] : "text/plain";
+            const contentType = extName ? mime_1.mimeTypes[extName] : "text/plain; charset=utf-8";
             fp = yield fs.open(fullPath, 'r');
             const stat = yield fp.stat();
             if (!stat.isFile()) {
@@ -345,20 +428,6 @@ function serveStaticFile(path, req) {
         }
     });
 }
-function parseBytesRanges(ranges) {
-    return ranges.map((range) => {
-        const idx = range.indexOf(Buffer.from('-'));
-        if (idx == 0) {
-            return parseDec(range.subarray(idx + 1));
-        }
-        else if (idx == range.length - 1) {
-            return [parseDec(range.subarray(0, idx)), null];
-        }
-        else {
-            return [parseDec(range.subarray(0, idx)), parseDec(range.subarray(idx + 1))];
-        }
-    });
-}
 function generateEtag(stat) {
     return Buffer.from(`"${stat.size}-${stat.mtimeMs}"`, 'ascii');
 }
@@ -376,6 +445,7 @@ function staticFileResp(fp, req, stat, contentType) {
                     headers: new Map([
                         ['etag', [eTag]],
                         ['cache-control', [Buffer.from('no-cache')]],
+                        ['accept-ranges', [Buffer.from('bytes')]],
                     ]),
                     body: readerFromMemory(Buffer.alloc(0)),
                 };
@@ -386,21 +456,29 @@ function staticFileResp(fp, req, stat, contentType) {
                 ranges.push([0, null]);
             }
             else {
-                ranges = parseBytesRanges(rangeField);
+                ranges = parseBytesRanges(rangeField, size);
             }
             const multipart = (ranges.length > 1);
+            let partialContent = true;
+            let contentLen = null;
+            if (!multipart) {
+                const [st, end] = processRange(ranges[0], size);
+                partialContent = partialContent && !(st === 0 && end === size - 1);
+                contentLen = end - st + 1;
+            }
             try {
                 const boundary = 'boundary-' + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString();
                 const gen = yield staticFileGenerator(fp, ranges, size, boundary, contentType); //Once this generator function calls: “The generator is now responsible for closing the file.” ownership transfered
-                const reader = yield readerFromGenerator(gen); //no ownership transfer of file, but ownership transfer of generator
+                const reader = yield readerFromGenerator(gen, contentLen ? contentLen : -1); //no ownership transfer of file, but ownership transfer of generator
                 return {
                     version: 'HTTP/1.1',
-                    status_code: multipart ? 206 : 200,
-                    reason: "OK",
+                    status_code: (multipart || partialContent) ? 206 : 200,
+                    reason: (multipart || partialContent) ? 'Partial Content' : "OK",
                     headers: new Map([
                         ['content-type', multipart ? [Buffer.from(`multipart/byteranges; boundary=${boundary}`)] : [Buffer.from(contentType, 'ascii')]], //TODO: extract from file type
                         ['etag', [eTag]],
                         ['cache-control', [Buffer.from('no-cache')]],
+                        ['accept-ranges', [Buffer.from('bytes')]],
                     ]),
                     body: reader
                 };
@@ -413,12 +491,44 @@ function staticFileResp(fp, req, stat, contentType) {
             //await fp?.close(); //if this function throws, it is its own responsibility to close the file before ownership is transfered
             console.error(err);
             if (err instanceof httpUtils_1.HTTPError) {
+                if (err.code === 416) {
+                    return {
+                        version: 'HTTP/1.1',
+                        status_code: 416,
+                        reason: 'Range Not Satisfiable',
+                        headers: new Map([
+                            ['content-range', [Buffer.from(`bytes */${stat.size}`)]], // ← crucial
+                            ['content-type', [Buffer.from('text/plain')]],
+                        ]),
+                        body: readerFromMemory(Buffer.from('Range Not Satisfiable')),
+                    };
+                }
                 return respError(err.code, err.reason, err.message);
             }
             throw new httpUtils_1.HTTPError(500, "Internal server error", "Unknown server error");
         }
         finally {
             yield (fp === null || fp === void 0 ? void 0 : fp.close());
+        }
+    });
+}
+function parseBytesRanges(ranges, size) {
+    return ranges.map((range) => {
+        const idx = range.indexOf(Buffer.from('-'));
+        if (idx == 0) {
+            return parseDec(range.subarray(idx + 1));
+        }
+        else if (idx == range.length - 1) {
+            const parsedRange = [parseDec(range.subarray(0, idx)), null];
+            if (parsedRange[0] >= size)
+                throw new httpUtils_1.HTTPError(416, "Range Not Satisfiable", "Range field is out of bounds");
+            return parsedRange;
+        }
+        else {
+            const parsedRange = [parseDec(range.subarray(0, idx)), parseDec(range.subarray(idx + 1))];
+            if (parsedRange[0] >= size)
+                throw new httpUtils_1.HTTPError(416, "Range Not Satisfiable", "Range field is out of bounds");
+            return parsedRange;
         }
     });
 }
@@ -463,7 +573,8 @@ function staticFileGenerator(fp, ranges, fileSize, boundary, contentType) {
                 const buf = Buffer.allocUnsafe(64 * 1024);
                 //yield the byte range
                 while (got < size) {
-                    const data = yield __await(fp.read(buf, 0, size - got, start));
+                    const chunkSize = Math.min(buf.length, size - got);
+                    const data = yield __await(fp.read(buf, 0, chunkSize, start));
                     got += data.bytesRead;
                     start += data.bytesRead;
                     yield yield __await(data.buffer.subarray(0, data.bytesRead));
@@ -483,11 +594,11 @@ function staticFileGenerator(fp, ranges, fileSize, boundary, contentType) {
         }
     });
 }
-function readerFromGenerator(gen) {
-    return __awaiter(this, void 0, void 0, function* () {
+function readerFromGenerator(gen_1) {
+    return __awaiter(this, arguments, void 0, function* (gen, length = -1) {
         try {
             return {
-                length: -1,
+                length: length,
                 read: () => __awaiter(this, void 0, void 0, function* () {
                     const r = yield gen.next();
                     if (r.done) {
@@ -662,6 +773,7 @@ function cutMessage(buf) {
     if (idx + 1 >= kMaxHeaderLen) {
         throw new httpUtils_1.HTTPError(431, "Header too long", 'Request Header Fields Too Large');
     }
+    console.log(buf.data.subarray(buf.readOffset, buf.readOffset + idx + 4).toString('ascii'));
     const msg = parseHTTPReq(buf.data.subarray(buf.readOffset, buf.readOffset + idx + 4)); //Buffer.from(buf.data.subarray(buf.readOffset, buf.readOffset+idx+1));
     (0, bufferUtils_1.bufPop)(buf, idx + 4); //pop from front: buffer, len
     return msg;
@@ -700,8 +812,12 @@ function parseHeader(header, headers) {
         }
         fieldValue = fieldValue.subarray(6);
     }
-    if (key === 'if-none-match' && headers.has(key))
-        throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', "Multiple headers for singleton header field If-None-Match");
+    else if (singletonHeaders.has(key)) {
+        if (headers.has(key))
+            throw new httpUtils_1.HTTPError(400, 'BAD REQUEST', `Multiple headers for singleton header field ${key}`);
+        headers.set(key, [fieldValue]);
+        return;
+    }
     let openQuote = false;
     let start = 0;
     let parts = [];
