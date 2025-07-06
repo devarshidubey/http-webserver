@@ -460,8 +460,9 @@ function staticFileResp(fp, req, stat, contentType) {
             const multipart = (ranges.length > 1);
             let partialContent = true;
             let contentLen = null;
+            let st, end;
             if (!multipart) {
-                const [st, end] = processRange(ranges[0], size);
+                [st, end] = processRange(ranges[0], size);
                 partialContent = partialContent && !(st === 0 && end === size - 1);
                 contentLen = end - st + 1;
             }
@@ -471,7 +472,7 @@ function staticFileResp(fp, req, stat, contentType) {
                 const boundary = 'boundary-' + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString();
                 const gen = yield staticFileGenerator(fp, ranges, size, boundary, contentType); //Once this generator function calls: “The generator is now responsible for closing the file.” ownership transfered
                 const reader = yield readerFromGenerator(gen, contentLen ? contentLen : -1); //no ownership transfer of file, but ownership transfer of generator
-                return {
+                const res = {
                     version: 'HTTP/1.1',
                     status_code: (multipart || partialContent) ? 206 : 200,
                     reason: (multipart || partialContent) ? 'Partial Content' : "OK",
@@ -483,6 +484,10 @@ function staticFileResp(fp, req, stat, contentType) {
                     ]),
                     body: reader
                 };
+                if (partialContent && !multipart) {
+                    fieldSet(res.headers, 'content-range', `bytes ${st}-${end}/${size}`);
+                }
+                return res;
             }
             finally {
                 fp = null;

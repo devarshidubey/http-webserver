@@ -465,9 +465,10 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, stat: Stat
 		const multipart: boolean = (ranges.length > 1);
 		let partialContent: boolean = true;
 		let contentLen: number | null = null;
+		let st, end;
 		
 		if(!multipart) {
-			const [st, end] = processRange(ranges[0], size);
+			[st, end] = processRange(ranges[0], size);
 			partialContent = partialContent && !(st === 0 && end === size-1);
 			contentLen = end - st  + 1;
 		}
@@ -479,7 +480,7 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, stat: Stat
 			const gen = await staticFileGenerator(fp, ranges, size, boundary, contentType); //Once this generator function calls: “The generator is now responsible for closing the file.” ownership transfered
 			const reader = await readerFromGenerator(gen, contentLen? contentLen: -1); //no ownership transfer of file, but ownership transfer of generator
 			
-			return {
+			const res: HTTPRes =  {
 				version: 'HTTP/1.1',
 				status_code: (multipart||partialContent)? 206: 200,
 				reason: (multipart||partialContent)? 'Partial Content': "OK",
@@ -491,6 +492,10 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, stat: Stat
 				]),
 				body: reader
 			}
+			if(partialContent && !multipart) {
+				fieldSet(res.headers, 'content-range', `bytes ${st}-${end}/${size}`);
+			}
+			return res;
 		} finally {
 			fp = null;
 		}
