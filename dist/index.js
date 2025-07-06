@@ -182,7 +182,6 @@ function serveClient(conn /*socket: net.Socket*/) {
                 continue;
             }
             const reqBody = yield readerFromReq(conn, buf, msg);
-            //console.log(msg);
             const res = yield handleReq(reqBody, msg);
             try {
                 enableCompression(msg, res);
@@ -191,7 +190,6 @@ function serveClient(conn /*socket: net.Socket*/) {
                     yield writeHTTPBody(conn, res);
             }
             finally {
-                //console.log(res);
                 yield ((_b = (_a = res.body).close) === null || _b === void 0 ? void 0 : _b.call(_a));
             }
             if (msg.version.toLowerCase() === 'http/1.0') {
@@ -437,7 +435,11 @@ function staticFileResp(fp, req, stat, contentType) {
             const size = stat.size;
             const eTag = generateEtag(stat);
             const ifNoneMatchHeader = fieldGet(req.headers, 'If-None-Match');
-            if (ifNoneMatchHeader && eTag.subarray(1, eTag.length - 1).equals(ifNoneMatchHeader[0])) {
+            if (ifNoneMatchHeader) {
+                console.log(ifNoneMatchHeader[0].toString('ascii'));
+                console.log(eTag.toString('ascii'));
+            }
+            if (ifNoneMatchHeader && eTag.equals(ifNoneMatchHeader[0])) {
                 return {
                     version: 'HTTP/1.1',
                     status_code: 304,

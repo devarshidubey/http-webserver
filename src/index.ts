@@ -432,11 +432,13 @@ async function serveStaticFile(path: string, req: HTTPReq): Promise<HTTPRes> {
  
 async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, stat: Stats, contentType: string): Promise<HTTPRes> {
 	try {
+	
 		const size = stat.size;
 		const eTag: Buffer = generateEtag(stat);
 		const ifNoneMatchHeader: Buffer[] | null = fieldGet(req.headers, 'If-None-Match');
 		
-		if(ifNoneMatchHeader && eTag.subarray(1, eTag.length-1).equals(ifNoneMatchHeader![0])) {
+		if(ifNoneMatchHeader && eTag.equals(ifNoneMatchHeader![0])) {
+			
 			return {
 				version: 'HTTP/1.1',
 				status_code:  304,
@@ -798,6 +800,7 @@ function cutMessage(buf: DynBuf): null | HTTPReq{
 	if(idx+1 >= kMaxHeaderLen) {
 		throw new HTTPError(431, "Header too long", 'Request Header Fields Too Large');
 	}
+	//console.log(buf.data.subarray(buf.readOffset, buf.readOffset+idx+4).toString('ascii'));
 	const msg: HTTPReq = parseHTTPReq(buf.data.subarray(buf.readOffset, buf.readOffset+idx+4));//Buffer.from(buf.data.subarray(buf.readOffset, buf.readOffset+idx+1));
 	
 	bufPop(buf, idx+4); //pop from front: buffer, len
