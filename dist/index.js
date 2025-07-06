@@ -458,12 +458,12 @@ function staticFileResp(fp, req, stat, contentType) {
                 ranges = parseBytesRanges(rangeField, size);
             }
             const multipart = (ranges.length > 1);
-            let partialContent = true;
+            let partialContent = rangeField !== null;
             let contentLen = null;
             let st, end;
             if (!multipart) {
                 [st, end] = processRange(ranges[0], size);
-                partialContent = partialContent && !(st === 0 && end === size - 1);
+                //partialContent = partialContent && !(st === 0 && end === size-1);
                 contentLen = end - st + 1;
             }
             if (ifRangeHeader)

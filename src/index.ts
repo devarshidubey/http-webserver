@@ -463,13 +463,13 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, stat: Stat
 		}
 
 		const multipart: boolean = (ranges.length > 1);
-		let partialContent: boolean = true;
+		let partialContent: boolean = rangeField !== null;
 		let contentLen: number | null = null;
 		let st, end;
 		
 		if(!multipart) {
 			[st, end] = processRange(ranges[0], size);
-			partialContent = partialContent && !(st === 0 && end === size-1);
+			//partialContent = partialContent && !(st === 0 && end === size-1);
 			contentLen = end - st  + 1;
 		}
 		
