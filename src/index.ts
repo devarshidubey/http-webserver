@@ -436,6 +436,7 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, stat: Stat
 		const size = stat.size;
 		const eTag: Buffer = generateEtag(stat);
 		const ifNoneMatchHeader: Buffer[] | null = fieldGet(req.headers, 'If-None-Match');
+		const ifRangeHeader: Buffer[] | null = fieldGet(req.headers, 'If-Range');
 		
 		if(ifNoneMatchHeader && eTag.equals(ifNoneMatchHeader![0])) {
 			
@@ -470,6 +471,8 @@ async function staticFileResp(fp: fs.FileHandle | null, req: HTTPReq, stat: Stat
 			partialContent = partialContent && !(st === 0 && end === size-1);
 			contentLen = end - st  + 1;
 		}
+		
+		if(ifRangeHeader) partialContent = partialContent && (eTag.equals(ifRangeHeader![0]))
 		
 		try {
 			const boundary= 'boundary-' + Math.floor((Math.random()*1e10)).toString() + Math.floor((Math.random()*1e10)).toString() + Math.floor((Math.random()*1e10)).toString() + Math.floor((Math.random()*1e10)).toString();

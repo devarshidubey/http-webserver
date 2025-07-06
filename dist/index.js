@@ -435,10 +435,7 @@ function staticFileResp(fp, req, stat, contentType) {
             const size = stat.size;
             const eTag = generateEtag(stat);
             const ifNoneMatchHeader = fieldGet(req.headers, 'If-None-Match');
-            if (ifNoneMatchHeader) {
-                console.log(ifNoneMatchHeader[0].toString('ascii'));
-                console.log(eTag.toString('ascii'));
-            }
+            const ifRangeHeader = fieldGet(req.headers, 'If-Range');
             if (ifNoneMatchHeader && eTag.equals(ifNoneMatchHeader[0])) {
                 return {
                     version: 'HTTP/1.1',
@@ -468,6 +465,8 @@ function staticFileResp(fp, req, stat, contentType) {
                 partialContent = partialContent && !(st === 0 && end === size - 1);
                 contentLen = end - st + 1;
             }
+            if (ifRangeHeader)
+                partialContent = partialContent && (eTag.equals(ifRangeHeader[0]));
             try {
                 const boundary = 'boundary-' + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString() + Math.floor((Math.random() * 1e10)).toString();
                 const gen = yield staticFileGenerator(fp, ranges, size, boundary, contentType); //Once this generator function calls: “The generator is now responsible for closing the file.” ownership transfered
@@ -775,7 +774,7 @@ function cutMessage(buf) {
     if (idx + 1 >= kMaxHeaderLen) {
         throw new httpUtils_1.HTTPError(431, "Header too long", 'Request Header Fields Too Large');
     }
-    console.log(buf.data.subarray(buf.readOffset, buf.readOffset + idx + 4).toString('ascii'));
+    //console.log(buf.data.subarray(buf.readOffset, buf.readOffset+idx+4).toString('ascii'));
     const msg = parseHTTPReq(buf.data.subarray(buf.readOffset, buf.readOffset + idx + 4)); //Buffer.from(buf.data.subarray(buf.readOffset, buf.readOffset+idx+1));
     (0, bufferUtils_1.bufPop)(buf, idx + 4); //pop from front: buffer, len
     return msg;
