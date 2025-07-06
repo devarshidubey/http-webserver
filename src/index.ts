@@ -10,6 +10,8 @@ import * as stream from "stream";
 import { pipeline } from "stream/promises";
 import { createGzip } from "zlib";
 
+const HOST = '127.0.0.1';
+const PORT = 80;
 const kMaxHeaderLen = 8*1024;
 const MAX_CHUNK_SIZE = 1024;
 let cachedDate: Buffer | null = null
@@ -330,6 +332,7 @@ function encodeHTTPRes(res: HTTPRes): Buffer { //writes header
 		fieldLine.push(Buffer.from("\r\n", 'ascii'));
 		headerFields.push(Buffer.concat(fieldLine))
 	})
+	console.log(Buffer.concat([resMessage, Buffer.concat(headerFields), Buffer.from('\r\n')]).toString('ascii'));
 	return Buffer.concat([resMessage, Buffer.concat(headerFields), Buffer.from('\r\n')]);
 }
 
@@ -808,7 +811,8 @@ function cutMessage(buf: DynBuf): null | HTTPReq{
 	if(idx+1 >= kMaxHeaderLen) {
 		throw new HTTPError(431, "Header too long", 'Request Header Fields Too Large');
 	}
-	//console.log(buf.data.subarray(buf.readOffset, buf.readOffset+idx+4).toString('ascii'));
+
+	console.log(buf.data.subarray(buf.readOffset, buf.readOffset+idx+4).toString('ascii'));
 	const msg: HTTPReq = parseHTTPReq(buf.data.subarray(buf.readOffset, buf.readOffset+idx+4));//Buffer.from(buf.data.subarray(buf.readOffset, buf.readOffset+idx+1));
 	
 	bufPop(buf, idx+4); //pop from front: buffer, len
@@ -1098,8 +1102,8 @@ function soAccept(listener: TCPListener): Promise<TCPConn> {
 
 
 let listener = soListen({
-	host: '127.0.0.1',
-	port: 1234,
+	host: HOST,
+	port: PORT,
 });
 
 async function acceptLoop(listener: TCPListener) {

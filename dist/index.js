@@ -65,6 +65,8 @@ const pathLib = __importStar(require("path"));
 const stream = __importStar(require("stream"));
 const promises_1 = require("stream/promises");
 const zlib_1 = require("zlib");
+const HOST = '127.0.0.1';
+const PORT = 80;
 const kMaxHeaderLen = 8 * 1024;
 const MAX_CHUNK_SIZE = 1024;
 let cachedDate = null;
@@ -336,6 +338,7 @@ function encodeHTTPRes(res) {
         fieldLine.push(Buffer.from("\r\n", 'ascii'));
         headerFields.push(Buffer.concat(fieldLine));
     });
+    console.log(Buffer.concat([resMessage, Buffer.concat(headerFields), Buffer.from('\r\n')]).toString('ascii'));
     return Buffer.concat([resMessage, Buffer.concat(headerFields), Buffer.from('\r\n')]);
 }
 function handleReq(body, req) {
@@ -779,7 +782,7 @@ function cutMessage(buf) {
     if (idx + 1 >= kMaxHeaderLen) {
         throw new httpUtils_1.HTTPError(431, "Header too long", 'Request Header Fields Too Large');
     }
-    //console.log(buf.data.subarray(buf.readOffset, buf.readOffset+idx+4).toString('ascii'));
+    console.log(buf.data.subarray(buf.readOffset, buf.readOffset + idx + 4).toString('ascii'));
     const msg = parseHTTPReq(buf.data.subarray(buf.readOffset, buf.readOffset + idx + 4)); //Buffer.from(buf.data.subarray(buf.readOffset, buf.readOffset+idx+1));
     (0, bufferUtils_1.bufPop)(buf, idx + 4); //pop from front: buffer, len
     return msg;
@@ -1024,8 +1027,8 @@ function soAccept(listener) {
     });
 }
 let listener = soListen({
-    host: '127.0.0.1',
-    port: 1234,
+    host: HOST,
+    port: PORT,
 });
 function acceptLoop(listener) {
     return __awaiter(this, void 0, void 0, function* () {
