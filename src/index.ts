@@ -158,7 +158,6 @@ async function serveClient(conn: TCPConn/*socket: net.Socket*/): Promise<void>{
 		}
 		
 		const reqBody: BodyReader = await readerFromReq(conn, buf, msg);
-		//console.log(msg);
 		const res: HTTPRes = await handleReq(reqBody, msg);
 		
 		
@@ -168,7 +167,6 @@ async function serveClient(conn: TCPConn/*socket: net.Socket*/): Promise<void>{
 			if(msg.method !== 'HEAD' && res.status_code != 304)
 				await writeHTTPBody(conn, res);
 		} finally {
-			//console.log(res);
 			await res.body.close?.();
 		}
 		
@@ -800,7 +798,6 @@ function cutMessage(buf: DynBuf): null | HTTPReq{
 	if(idx+1 >= kMaxHeaderLen) {
 		throw new HTTPError(431, "Header too long", 'Request Header Fields Too Large');
 	}
-	console.log(buf.data.subarray(buf.readOffset, buf.readOffset+idx+4).toString('ascii'));
 	const msg: HTTPReq = parseHTTPReq(buf.data.subarray(buf.readOffset, buf.readOffset+idx+4));//Buffer.from(buf.data.subarray(buf.readOffset, buf.readOffset+idx+1));
 	
 	bufPop(buf, idx+4); //pop from front: buffer, len
