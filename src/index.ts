@@ -11,7 +11,7 @@ import { pipeline } from "stream/promises";
 import { createGzip } from "zlib";
 
 const HOST = '127.0.0.1';
-const PORT = 80;
+const PORT = 8080;
 const kMaxHeaderLen = 8*1024;
 const MAX_CHUNK_SIZE = 1024;
 let cachedDate: Buffer | null = null
