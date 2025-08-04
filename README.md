@@ -68,15 +68,24 @@ Taking a page from C’s manual memory management playbook, the resources, namel
 ✅ Safari  
 ✅ cURL  
 ✅ Netcat  
-✅ Real-world patience
+✅ AI generated test code
 
 ---
 
+## How do you run it?
+Just clone the repo and the run the following command inside the directory:
+```
+npx tsc
+node dst/index.js
+```
+You can use your browser to test it at: localhost/8080 or use netcat or curl(super useful)
 ## 🔗 Check it out
 The server is deployed on Raspberry Pi 4B, have a look: [Deployed Server](https://cv.devarshidubey.com)
 
 ---
 
 Made with 🧠, patience, and way too much caffine. And obviously with the help of these kind souls:
+
 https://dev.to/osmanmrtacar/simple-http-server-using-nodejs-net-module-5aoa
+
 [Build Your Own Web Server From Scratch In Node.JS by James Smith](https://leanpub.com/byo_web_server/) - for all the theory and design considerations
