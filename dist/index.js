@@ -365,7 +365,11 @@ function handleReq(body, req) {
                 validateFilePath(uri.substring('/files/'.length));
                 return yield staticFileHandler(uri.substring('/files/'.length), req);
             case uri === '/':
-                return yield staticFileHandler('home.html', req);
+                return yield staticFileHandler('src/home.html', req);
+            case uri === '/project':
+                return yield staticFileHandler('src/project.html', req);
+            case uri === '/contact':
+                return yield staticFileHandler('src/contact.html', req);
             default:
                 throw new httpUtils_1.HTTPError(404, 'Not found', "We are sorry, but the page you requested was not found");
         }

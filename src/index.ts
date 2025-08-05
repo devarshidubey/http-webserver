@@ -361,7 +361,11 @@ async function handleReq(body: BodyReader, req: HTTPReq): Promise<HTTPRes> { //a
 		validateFilePath(uri.substring('/files/'.length));
 		return await staticFileHandler(uri.substring('/files/'.length), req);
 	case uri === '/':
-		return await staticFileHandler('home.html', req);
+		return await staticFileHandler('src/home.html', req);
+	case uri === '/project':
+		return await staticFileHandler('src/project.html', req);
+	case uri === '/contact':
+		return await staticFileHandler('src/contact.html', req);
 	default:
 		throw new HTTPError(404, 'Not found', "We are sorry, but the page you requested was not found");
 	}
