@@ -1,0 +1,43 @@
+/* index.css - Shared styles for all pages */
+
+* {
+  box-sizing: border-box;
+  -webkit-box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Cabin', sans-serif;
+  background-color: #FFFAFA;
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+.nav-buttons a {
+  display: inline-block;
+  margin: 0 10px;
+  padding: 12px 24px;
+  background-color: #262626;
+  color: #fff;
+  font-weight: bold;
+  text-transform: uppercase;
+  border-radius: 4px;
+  letter-spacing: 1px;
+  transition: background-color 0.3s;
+}
+
+.nav-buttons a:hover {
+  background-color: #444;
+}
+
+@media only screen and (max-width: 480px) {
+  .nav-buttons a {
+    padding: 10px 20px;
+    font-size: 14px;
+  }
+}
+

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My HTTP Server Project</title>
+
+  <link href="https://fonts.googleapis.com/css?family=Cabin:400,700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css?family=Montserrat:900&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/files/assets/css/index.css" />
+  <link rel="stylesheet" href="/files/assets/css/project.css" />
+</head>
+<body>
+  <div id="projectpage">
+    <h1 class="title">Project: HTTP Server</h1>
+    <h2 class="subtitle">Hand-rolled.</h2>
+
+    <section class="intro">
+      <p>
+        hi yall so this is my http web server that I made over a whole month. It took 1500+ lines of code, shit ton of coffee and borderline mental breakdown over debugging nasty errors. Here’s what this baby does:
+      </p>
+      <ul>
+        <li>It is rfc compliant so ya'll know this gonna work on any modern system</li>
+        <li>I had a nightmare of a week to configure it to allow range requests from browser especially while serving video files: trust me don't blindly follow RFCs, look for the actual practices)</li>
+        <li>GZip compression enabled</li>
+        <li>ETag-based caching</li>
+        <li>supports dynamic content: data streaming, but only compatible with terminal commands like curl, (it generates a number every second on the fly))</li>
+      </ul>
+      <p>Since this is a simple file server, i haven't implemented POST requests yet.</p>
+    </section>
+
+    <section class="deployment">
+      <h3>Deployed on Raspberry Pi 4B</h3>
+      <p>
+        Alright, deploying this seemed pretty straightforward at first, but then I encountered the CGNAT problem cause my ISP is deadbroke, they gotta save money by reduing IPv4s. But I found a turnaround that: <a href="https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/" style="text-decoration: underline;">Argo Tunnel</a>, yall can look it up.
+      </p>
+      <p>So finally my server is running on this little guy right here:</p>
+      <img class="pi-image" src="/files/assets/media/pi.jpg" alt="Raspberry Pi 4B" />
+    </section>
+
+    <section class="video-demo">
+      <h3>Video Streaming Demo 🎥</h3>
+      <video controls>
+        <source src="/files/assets/media/som.mp4" type="video/mp4">
+        Your browser doesn't support the video tag.
+      </video>
+      <p>You can test multipart byte-range support by downloading the following file (try pausing midway):</p>
+      <a class="download-button" href="/files/assets/media/rickroll.mp4" download>Download Video</a>
+    </section>
+
+    <section class="optimizations">
+      <h3>Under the Hood </h3>
+      <p>The server has performed quite decently in stress tests, but there is still a large scope of improvement in latency, which im planning to do by integrating my in memory cache server with this.</p>
+      <p>So far I have ensured necessary optimizations at each level: </p>
+      <ul>
+        <li>A custom dynamic buffer like C++ vector with amortized O(n) read/write.</li>
+        <li>Header parsing as raw bytes(no memcpy overhead)</li>
+        <li>Fast key-value mapping of headers</li>
+      </ul>
+    </section>
+
+    <section class="security">
+      <h3>Security & Testing </h3>
+      <p>
+        I have taken care of most common security threats, tho you are welcome to give it a test drive. 
+      </p>
+    </section>
+
+    <section class="github">
+      <a class="github-button" href="https://github.com/devarshidubey/http-webserver" target="_blank">
+        View Source on GitHub 
+      </a>
+    </section>
+
+    <section class="outro">
+      <img class="cat-gif" src="/files/assets/media/cat.gif" alt="Cat" />
+      <p class="caption">Thank you for your attention</p>
+    </section>
+  </div>
+</body>
+</html>
+

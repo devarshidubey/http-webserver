@@ -1,0 +1,130 @@
+/*#projectpage {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 40px 20px;
+  font-family: 'Cabin', sans-serif;
+  color: #262626;
+  background-color: #FFF2F2;
+}*/
+#projectpage {
+  position: relative;
+  font-family: 'Cabin', sans-serif;
+  color: #262626;
+  background-color: #FFF2F2;
+  padding: 4rem 2rem;
+  max-width: 800px;
+  margin: 0 auto;
+  line-height: 1.6;
+  min-height: 100vh;
+  z-index: 1;
+}
+
+#projectpage::before,
+#projectpage::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 80px;
+  z-index: -1;
+}
+
+#projectpage::before {
+  left: -80px;
+background: linear-gradient(to right, rgba(255, 250, 250, 0), rgba(255, 242, 242, 0.8), #FFF2F2);
+
+}
+
+#projectpage::after {
+  right: -80px;
+background: linear-gradient(to left, rgba(255, 250, 250, 0), rgba(255, 242, 242, 0.8), #FFF2F2);
+
+}
+
+.title {
+  font-family: 'Montserrat', sans-serif;
+  font-size: 48px;
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.subtitle {
+  font-size: 20px;
+  color: #bbb;
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+section {
+  margin-bottom: 40px;
+}
+
+ul {
+  padding-left: 20px;
+}
+
+ul li {
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+
+img.pi-image {
+  width: 100%;
+  max-width: 400px;
+  display: block;
+  margin: 20px auto;
+  border-radius: 12px;
+  box-shadow: 0 0 10px rgba(255,255,255,0.1);
+}
+
+.video-demo video {
+  width: 100%;
+  border-radius: 10px;
+  margin-top: 10px;
+}
+
+.download-button {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 10px 20px;
+  background: #444;
+  color: #fff;
+  text-decoration: none;
+  border-radius: 6px;
+  transition: background 0.2s;
+}
+.download-button:hover {
+  background: #666;
+}
+
+.github-button {
+  display: block;
+  width: fit-content;
+  margin: 0 auto;
+  padding: 12px 24px;
+  background-color: #24292e;
+  color: white;
+  text-decoration: none;
+  font-weight: bold;
+  border-radius: 8px;
+  box-shadow: 0 0 5px #000;
+}
+.github-button:hover {
+  background-color: #2f363d;
+}
+
+.cat-gif {
+  display: block;
+  margin: 30px auto 10px;
+  width: 80%;
+  max-width: 400px;
+  border-radius: 10px;
+}
+
+.caption {
+  text-align: center;
+  color: #aaa;
+  font-size: 14px;
+  margin-top: -5px;
+}
+
