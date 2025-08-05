@@ -85,7 +85,7 @@ function soInit(socket: net.Socket): TCPConn{
 	socket.on('data', (data: Buffer)=> {
 		console.assert(conn.reader);
 		socket.pause();
-		conn.reader!.resolve (data); //! to avoid typescript throwing error: operation on a possible null value, but we assure TS that it will never be null by using !
+		conn.reader!.resolve(data); //! to avoid typescript throwing error: operation on a possible null value, but we assure TS that it will never be null by using !
 		conn.reader = null;
 	});
 	
