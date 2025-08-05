@@ -2,3 +2,4 @@ node_models/
 test/
 client.ts
 npm-debug.log
+public/
